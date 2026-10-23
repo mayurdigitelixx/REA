@@ -18,6 +18,10 @@ export async function createApplicationMcpHarness(
   options: {
     readonly session?: BinarySession;
     readonly serverOptions?: Parameters<typeof createServer>[1];
+    readonly configureServer?: (
+      server: ReturnType<typeof createServer>,
+      session: BinarySession,
+    ) => void;
   } = {},
 ): Promise<ApplicationMcpHarness> {
   const session =
@@ -30,6 +34,7 @@ export async function createApplicationMcpHarness(
     { kind: "session", session },
     options.serverOptions,
   );
+  options.configureServer?.(server, session);
   const client = new Client({
     name: "application-workflow-test",
     version: "1",

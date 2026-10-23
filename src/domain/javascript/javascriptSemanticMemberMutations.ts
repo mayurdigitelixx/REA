@@ -1,7 +1,7 @@
 import * as t from "@babel/types";
 import {
   createAmbientPathResolver,
-  retainSemanticAmbientEffect,
+  retainSemanticAmbientReceiverEscape,
 } from "./javascriptSemanticAmbientWrites.js";
 import { isIntrinsicMapLookup } from "./javascriptSemanticMapOperations.js";
 import {
@@ -526,7 +526,6 @@ export function* collectSemanticMemberMutationsSteps(
     iterableReferenceKeys.set(reference.node, keys);
     iterableReferences.push(reference);
   };
-  const ambientPaths = createAmbientPathResolver(state, true);
   const markValue = (
     node: t.Node,
     path: PropertyPath,
@@ -582,18 +581,6 @@ export function* collectSemanticMemberMutationsSteps(
       if (t.isIdentifier(expression)) {
         const binding = resolveBinding(expression, expression.name);
         if (binding === undefined) {
-          for (const path of ambientPaths(
-            expression,
-            current.originAt,
-            effect === "escape",
-            current.path.map((key) =>
-              key === null || typeof key === "object" ? null : String(key),
-            ),
-          ))
-            if (retainSemanticAmbientEffect(state, effect, path, mutation)) {
-              recordedEffectCount += 1;
-              clearSemanticValueCaches(state);
-            }
           const processOrigin = semanticGlobalProcessOrigin(expression, state);
           if (processOrigin !== undefined)
             recordRequiredEffect(
@@ -1127,8 +1114,22 @@ export function* collectSemanticMemberMutationsSteps(
         if (!writeOnlyMembers.has(node))
           for (const path of getterEffectPaths(node.object, [
             semanticStaticPropertyKey(node.property, node.computed),
-          ]))
+          ])) {
+            // An invoked getter exposes this receiver path. Local reference
+            // stores processed below do not themselves escape ambient values.
+            if (
+              retainSemanticAmbientReceiverEscape(
+                state,
+                node.object,
+                path,
+                node,
+              )
+            ) {
+              recordedEffectCount += 1;
+              clearSemanticValueCaches(state);
+            }
             markEscaped(node.object, node, path);
+          }
       }
       if (writeTarget !== null) markTarget(writeTarget, node);
       else if (

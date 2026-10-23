@@ -22,6 +22,7 @@ import {
   type SemanticIterationSource,
 } from "./javascriptSemanticIterationSources.js";
 import { createSemanticReturnedReferences } from "./javascriptSemanticReturnedReferences.js";
+import type { JavaScriptSemanticPropertyPath } from "./javascriptSemanticPropertyPaths.js";
 import {
   semanticCopiedReferencePath,
   semanticReferenceIterationUnknown,
@@ -55,7 +56,7 @@ const retainedAmbientEffects = new WeakMap<
 >();
 
 /** Retain canonical ambient effects once, whether discovered by syntax or receiver expansion. */
-export const retainSemanticAmbientEffect = (
+const retainSemanticAmbientEffect = (
   state: JavaScriptSemanticAnalysisState,
   kind: "write" | "escape",
   path: AmbientPath,
@@ -473,6 +474,37 @@ export const createAmbientPathResolver = (
   };
 };
 
+const ambientEffectResolvers = new WeakMap<
+  JavaScriptSemanticAnalysisState,
+  ReturnType<typeof createAmbientPathResolver>
+>();
+
+/** Publish an invoked getter's receiver escape using the indexed local-store facts. */
+export const retainSemanticAmbientReceiverEscape = (
+  state: JavaScriptSemanticAnalysisState,
+  receiver: t.Node,
+  projection: JavaScriptSemanticPropertyPath,
+  site: t.Node,
+): boolean => {
+  const resolve = ambientEffectResolvers.get(state);
+  if (resolve === undefined)
+    throw new Error(
+      "Ambient indexing must precede receiver effect publication",
+    );
+  let retained = false;
+  for (const path of resolve(
+    receiver,
+    site,
+    true,
+    projection.map((key) =>
+      key === null || typeof key === "object" ? null : String(key),
+    ),
+  ))
+    retained =
+      retainSemanticAmbientEffect(state, "escape", path, site) || retained;
+  return retained;
+};
+
 /**
  * Index source-local writes through ambient identities and stable aliases.
  * The shared invocation owner resolves intrinsic aliases, bind/call/apply and
@@ -529,6 +561,7 @@ export function* indexJavaScriptAmbientWritesSteps(
         : undefined;
     },
   });
+  ambientEffectResolvers.set(state, ambientWrites);
   yield* collectJavaScriptIdentityWritesSteps(
     program,
     (root, kind, writeSite) => {

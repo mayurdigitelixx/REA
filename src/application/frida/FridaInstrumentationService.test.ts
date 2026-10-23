@@ -459,6 +459,13 @@ it.each([false, true])(
                   "frida",
                   "close_frida_session",
                   "session cleanup failed",
+                  {
+                    userMessage: "session cleanup failed",
+                    cleanup: {
+                      reason: "session cleanup failed",
+                      resources: [createSession().sessionId],
+                    },
+                  },
                 ),
               }
             : { ok: true, value: { targetResumeObserved: false } };
@@ -485,10 +492,11 @@ it.each([false, true])(
     if (result.ok) return;
     expect(result.error).not.toBeInstanceOf(AnalysisCancelledError);
     if (cleanupFails) {
-      expect(result.error).toBeInstanceOf(AnalysisCapabilityUnavailableError);
-      expect(result.error.cause).toBe(primary);
-      expect(result.error.diagnostics).toEqual({
-        native_status: "resume_rejected",
+      expect(result.error.cleanupPrimary).toBe(primary);
+      expect(result.error.cause).toBeInstanceOf(AggregateError);
+      expect(result.error.diagnostics?.primary_error).toMatchObject({
+        code: "capability_unavailable",
+        details: { diagnostics: { native_status: "resume_rejected" } },
       });
       expect(result.error.cleanup).toMatchObject({
         reason: expect.stringContaining("session cleanup failed"),
@@ -907,23 +915,25 @@ it("records target selection in Evidence without remote authentication values", 
 });
 
 it("reports completed cleanup when closing the parent session releases a failed script", async () => {
+  const failure = new AnalysisCapabilityUnavailableError(
+    "frida",
+    "load_frida_script",
+    "script load failed",
+    {
+      cleanup: {
+        reason: "script unload failed",
+        resources: ["script-1"],
+      },
+    },
+  );
   const service = new FridaInstrumentationService(
     createProvider({
       async loadScript() {
-        return {
-          ok: false,
-          error: new AnalysisCapabilityUnavailableError(
-            "frida",
-            "load_frida_script",
-            "script load failed",
-            {
-              cleanup: {
-                reason: "script unload failed",
-                resources: ["script-1"],
-              },
-            },
-          ),
-        };
+        return { ok: false, error: failure };
+      },
+      async closeSession() {
+        failure.resolveCleanup();
+        return { ok: true, value: { targetResumeObserved: false } };
       },
     }),
   );
@@ -1084,6 +1094,13 @@ it.each([
                   "frida",
                   "close_frida_session",
                   "session cleanup failed",
+                  {
+                    userMessage: "session cleanup failed",
+                    cleanup: {
+                      reason: "session cleanup failed",
+                      resources: [createSession().sessionId],
+                    },
+                  },
                 ),
               }
             : { ok: true, value: { targetResumeObserved: false } };
@@ -1106,10 +1123,11 @@ it.each([
     expect(result.error).not.toBeInstanceOf(AnalysisCancelledError);
     expect(controller.signal.reason).toBe(abortReason);
     if (cleanupFails) {
-      expect(result.error).toBeInstanceOf(AnalysisCapabilityUnavailableError);
-      expect(result.error.cause).toBe(primary);
-      expect(result.error.diagnostics).toEqual({
-        native_status: "compile_rejected",
+      expect(result.error.cleanupPrimary).toBe(primary);
+      expect(result.error.cause).toBeInstanceOf(AggregateError);
+      expect(result.error.diagnostics?.primary_error).toMatchObject({
+        code: "capability_unavailable",
+        details: { diagnostics: { native_status: "compile_rejected" } },
       });
       expect(result.error.cleanup).toMatchObject({
         reason: expect.stringContaining("session cleanup failed"),

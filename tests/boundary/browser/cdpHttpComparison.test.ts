@@ -96,6 +96,8 @@ describe("HTTP comparison response coverage", () => {
       [response],
       [{ ...response, status: 500 }],
     );
+    expect(compareNetwork(before, after).status).toBe("unknown");
+    markNetworkInventoriesComplete(before, after);
     expect(compareNetwork(before, after)).toMatchObject({
       status: "changed",
       changes: [expect.objectContaining({ change: "modified" })],
@@ -110,6 +112,8 @@ describe("HTTP comparison response coverage", () => {
       [{ ...response, encodedDataLength: 100 }],
       [{ ...response, ...change }],
     );
+    expect(compareNetwork(before, after).status).toBe("unknown");
+    markNetworkInventoriesComplete(before, after);
     expect(compareNetwork(before, after).status).toBe("changed");
   });
 });
@@ -145,6 +149,8 @@ describe("HTTP comparison repeated request coverage", () => {
         { ...response, requestId: "first-after", encodedDataLength: 100 },
       ],
     );
+    expect(compareNetwork(before, after).status).toBe("unknown");
+    markNetworkInventoriesComplete(before, after);
     expect(compareNetwork(before, after).status).toBe("changed");
   });
 
@@ -169,6 +175,8 @@ describe("HTTP comparison repeated request coverage", () => {
         },
       ],
     );
+    expect(compareNetwork(before, after).status).toBe("unknown");
+    markNetworkInventoriesComplete(before, after);
     expect(compareNetwork(before, after).status).toBe("changed");
   });
 });

@@ -53,6 +53,28 @@ it.each([
   },
 );
 
+it("keeps local storage distinct from its later ambient escape site", () => {
+  const source = "const box={};box.prototype=Map.prototype;patch(box);";
+  const parsed = parseJavaScriptSource(source);
+  if (parsed === null) throw new Error("Expected local store fixture");
+  const index = completeSemanticSteps(
+    indexJavaScriptBindingsWithReceiversSteps(parsed.program),
+  );
+  completeSemanticSteps(index.indexAmbientWritesSteps());
+  const effects = [...index.bindings.ambientEscapeEffects];
+  expect(effects).toEqual([
+    {
+      path: ["global", "Map", "prototype", null],
+      node: expect.objectContaining({ type: "CallExpression" }),
+    },
+  ]);
+  expect(
+    effects.map(({ node }) => source.slice(node?.start ?? 0, node?.end ?? 0)),
+  ).toEqual(["patch(box)"]);
+  completeSemanticSteps(index.indexMemberMutationFactsSteps());
+  expect(index.bindings.ambientEscapeEffects).toEqual(effects);
+});
+
 it.each([
   {
     name: "reconverging projections with different alias-cycle histories",
@@ -107,24 +129,33 @@ new Worker(new URL("./worker.js", import.meta.url));`;
   expect(worker?.specifier).toBe(specifier);
 });
 
-it("retains getter-derived ambient escapes once per invoked read site", () => {
-  const source = `const box={loader:require,get trigger(){this.loader.resolve=this.loader;return 0}};
+it.each([
+  "const box={loader:require,get trigger(){this.loader.resolve=this.loader;return 0}};",
+  "const box={loader:globalThis.require,get trigger(){this.loader.resolve=this.loader;return 0}};",
+  "const box={get trigger(){this.loader.resolve=this.loader;return 0}};box.loader=require;",
+])(
+  "retains getter-derived ambient escapes once per invoked read site: %s",
+  (setup) => {
+    const source = `${setup}
 box.trigger;
 box.trigger;`;
-  const parsed = parseJavaScriptSource(source);
-  if (parsed === null) throw new Error("Expected getter fixture");
-  const index = completeSemanticSteps(
-    indexJavaScriptBindingsWithReceiversSteps(parsed.program),
-  );
-  completeSemanticSteps(index.indexMemberMutationFactsSteps());
-  const effects = index.bindings.ambientEscapeEffects.filter(
-    ({ path }) =>
-      JSON.stringify(path) === JSON.stringify(["global", "require", null]),
-  );
-  expect(
-    effects.map(({ node }) =>
-      node === undefined ? null : source.slice(node.start ?? 0, node.end ?? 0),
-    ),
-  ).toEqual(["box.trigger", "box.trigger"]);
-  expect(effects[0]?.node).not.toBe(effects[1]?.node);
-});
+    const parsed = parseJavaScriptSource(source);
+    if (parsed === null) throw new Error("Expected getter fixture");
+    const index = completeSemanticSteps(
+      indexJavaScriptBindingsWithReceiversSteps(parsed.program),
+    );
+    completeSemanticSteps(index.indexMemberMutationFactsSteps());
+    const effects = index.bindings.ambientEscapeEffects.filter(
+      ({ path }) =>
+        JSON.stringify(path) === JSON.stringify(["global", "require", null]),
+    );
+    expect(
+      effects.map(({ node }) =>
+        node === undefined
+          ? null
+          : source.slice(node.start ?? 0, node.end ?? 0),
+      ),
+    ).toEqual(["box.trigger", "box.trigger"]);
+    expect(effects[0]?.node).not.toBe(effects[1]?.node);
+  },
+);

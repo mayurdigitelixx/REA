@@ -395,7 +395,7 @@ export const createGoBinaryByteStringFixture = () => {
   };
 };
 
-/** Unsupported DOS/Windows carriers and damaged PE records for public diagnostics. */
+/** Unconfirmed MZ candidates stay distinct from malformed, confirmed PE records. */
 export const createGoBinaryDiagnosticFixtures = () => {
   const unsupported = [
     { name: "dos-short", bytes: dosMz(16) },
@@ -443,6 +443,12 @@ export const createGoBinaryDiagnosticFixtures = () => {
       details: { operation: "inspect_go_binary" },
     })),
     ...[
+      // Retain malformed-input coverage with an actual PE declaration, rather
+      // than inferring PE from bytes whose signature was deliberately destroyed.
+      {
+        name: "truncated-pe-coff",
+        bytes: createGoBinaryFixture({ format: "pe" }).bytes.subarray(0, 132),
+      },
       { name: "absent-directories", bytes: absentDirectories },
       ...shortOptionalHeaders,
     ].map((fixture) => ({

@@ -319,6 +319,7 @@ const expectResourceSchemaBranches = async (client: Client): Promise<void> => {
       validResult: jsonObjectSchema.parse({
         target_sha256: "a".repeat(64),
         catalogs: [],
+        inventory_coverage: { scope: "container-entries", status: "unknown" },
         total_records: 0,
         offset: 0,
         limit: 1,

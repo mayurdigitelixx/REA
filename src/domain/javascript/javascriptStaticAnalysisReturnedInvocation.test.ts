@@ -169,6 +169,9 @@ it("retains a finite shared callable alias graph", () => {
     "direct-call",
   )(call.callee, call);
   expect(result).toEqual({
+    callables: new Set([
+      expect.objectContaining({ type: "ArrowFunctionExpression" }),
+    ]),
     references: [
       {
         node: expect.objectContaining({ type: "Identifier", name: "module" }),

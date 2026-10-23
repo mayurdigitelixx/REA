@@ -12,6 +12,7 @@ import {
   compareManagedMemberPaths,
 } from "../../../../src/application/managed/ManagedMemberComparisonService.js";
 import { parseBinaryTarget } from "../../../../src/application/BinaryTargetResolver.js";
+import type { BinaryTarget } from "../../../../src/domain/binaryTargetTypes.js";
 import { managedMemberComparisonResultSchema } from "../../../../src/domain/managed/managedMemberComparison.js";
 import { readManagedMemberEvidence } from "../../../../src/domain/managed/managedMemberComparisonMatch.js";
 import { createEvidence } from "../../../../src/domain/evidence.js";
@@ -30,6 +31,23 @@ import {
 } from "../../../../src/dotnet/ManagedSnapshot.js";
 import * as boundedFileBytes from "../../../../src/process/BoundedFileBytes.js";
 import { buildManagedMemberCapacityFixture } from "../../../fixtures/managedMemberCapacity.js";
+
+// Target admission also owns file descriptors. Resolve it before injecting the
+// snapshot-specific close failure, so that fault still reaches its named owner.
+const resolvedComparisonTargets = async (paths: readonly string[]) => {
+  const targets = new Map<string, BinaryTarget>();
+  for (const path of paths) {
+    const target = await parseBinaryTarget(path);
+    if (!target.ok) throw target.error;
+    targets.set(path, target.value);
+  }
+  return async (path: string) => {
+    const target = targets.get(path);
+    if (target === undefined)
+      throw new Error(`Unmodeled comparison target: ${path}`);
+    return { ok: true as const, value: target };
+  };
+};
 
 it("keeps missing members unknown when the opposite inspection retains only types", async () => {
   const directory = await createTestTempDirectory(
@@ -821,6 +839,10 @@ describe("managed comparison snapshot admission and cleanup", () => {
     const rightPath = join(directory, "right.dll");
     await writeFile(leftPath, buildManagedPeFixture());
     await writeFile(rightPath, buildManagedPeFixture());
+    const resolveTarget = await resolvedComparisonTargets([
+      leftPath,
+      rightPath,
+    ]);
     const resources = new ArtifactResourceScope();
     const originalClose = OwnedFileHandle.prototype.close;
     const owners: OwnedFileHandle[] = [];
@@ -836,7 +858,7 @@ describe("managed comparison snapshot admission and cleanup", () => {
     try {
       const result = await compareManagedMemberPaths(
         { leftPath, rightPath },
-        {},
+        { resolveTarget },
         resources,
       );
 
@@ -857,6 +879,10 @@ describe("managed comparison snapshot admission and cleanup", () => {
     const rightPath = join(directory, "right.dll");
     await writeFile(leftPath, buildManagedPeFixture());
     await writeFile(rightPath, buildManagedPeFixture());
+    const resolveTarget = await resolvedComparisonTargets([
+      leftPath,
+      rightPath,
+    ]);
     const resources = new ArtifactResourceScope();
     const cleanupCause = new Error("injected persistent close failure");
     const owners: OwnedFileHandle[] = [];
@@ -870,7 +896,7 @@ describe("managed comparison snapshot admission and cleanup", () => {
     try {
       result = await compareManagedMemberPaths(
         { leftPath, rightPath },
-        {},
+        { resolveTarget },
         resources,
       );
       expect(result.ok).toBe(false);

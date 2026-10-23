@@ -148,19 +148,18 @@ try {
         `Passive browser result included unselected structured data: ${secret}`,
       );
 
-  const withSource = await provider.inspectPage(
-    inspectWebPageInputSchema.parse({
-      cdp_endpoint: endpoint,
-      allowed_origins: [site.origin],
-      target_id: target,
-      observation_ms: 1_000,
-      include_accessibility_text: true,
-      include_script_sources: true,
-      include_console_text: true,
-      include_json_body_shapes: true,
-      include_websocket_shapes: true,
-    }),
-  );
+  const sourceInput = inspectWebPageInputSchema.parse({
+    cdp_endpoint: endpoint,
+    allowed_origins: [site.origin],
+    target_id: target,
+    observation_ms: 1_000,
+    include_accessibility_text: true,
+    include_script_sources: true,
+    include_console_text: true,
+    include_json_body_shapes: true,
+    include_websocket_shapes: true,
+  });
+  const withSource = await provider.inspectPage(sourceInput);
   if (!withSource.ok) throw withSource.error;
   const source = withSource.value.scripts.items.find(
     (script) =>
@@ -192,7 +191,24 @@ try {
   if (!captureDiff.ok) throw captureDiff.error;
   if (
     captureDiff.value.dimensions.dom_structure.status !== "unchanged" ||
-    captureDiff.value.dimensions.scripts.status !== "unchanged"
+    captureDiff.value.dimensions.scripts.status !== "unknown" ||
+    captureDiff.value.dimensions.scripts.total_changes !== 0
+  )
+    throw new Error(
+      "Real Chrome comparison lost asymmetric source uncertainty",
+    );
+  const repeatedSource = await provider.inspectPage(sourceInput);
+  if (!repeatedSource.ok) throw repeatedSource.error;
+  const sameSelectionDiff = await provider.compareCaptures(
+    compareWebCapturesInputSchema.parse({
+      before: { inspection: withSource.value },
+      after: { inspection: repeatedSource.value },
+    }),
+  );
+  if (!sameSelectionDiff.ok) throw sameSelectionDiff.error;
+  if (
+    sameSelectionDiff.value.dimensions.dom_structure.status !== "unchanged" ||
+    sameSelectionDiff.value.dimensions.scripts.status !== "unchanged"
   )
     throw new Error("Real Chrome stable capture identities did not reconcile");
 
