@@ -94,7 +94,8 @@ const writeBytes = async (
   return { path: written.relativePath, bytes: written.bytesWritten };
 };
 
-interface BundleTarball {
+/** The package tarball instance admitted once and retained until its owner closes it. */
+export interface BundleTarball {
   readonly path: string;
   readonly handle: FileHandle;
   readonly size: number;
@@ -142,10 +143,11 @@ const writeBundleFiles = async (
       }
     | { readonly kind: "failed"; readonly cause: unknown };
   try {
-    await mkdir(dirname(input.directory), { recursive: true, mode: 0o700 });
+    if (input.exclusiveDestination !== true)
+      await mkdir(dirname(input.directory), { recursive: true, mode: 0o700 });
     try {
       tree = await SafeOutputTree.create(input.directory, process.platform, {
-        acceptExistingEmpty: true,
+        acceptExistingEmpty: input.exclusiveDestination !== true,
       });
     } catch (cause: unknown) {
       if (cause instanceof SafeOutputTreeCreationFailure) tree = cause.tree;
@@ -208,14 +210,31 @@ const writeBundleFiles = async (
   return outcome.files;
 };
 
-/** Retain one tarball instance across planning output writes and final stability verification. */
-export const writeEnvironmentBundle = async (
-  input: EnvironmentExportInput,
-  plan: EnvironmentBundlePlan,
-): Promise<readonly WrittenBundleFile[]> => {
-  if (plan.packageSource.kind !== "tarball")
-    return writeBundleFiles(input, plan);
-  const path = plan.packageSource.path;
+/** A package tarball path that names no readable regular file. */
+export const packageTarballRefusal = (
+  path: string,
+  cause: unknown,
+): AnalysisInputError =>
+  new AnalysisInputError(
+    ENVIRONMENT_EXPORT_OPERATION,
+    {
+      cause,
+      userMessage: `${path} must name a readable regular package tarball.`,
+    },
+    [
+      {
+        path: ["package_tarball"],
+        reason: "invalid_value",
+        message: "The package tarball must be an existing regular file.",
+      },
+    ],
+  );
+
+/** Admit the package tarball once and retain it through `use`; a close it cannot confirm stays bound to its owner. */
+export const withBundleTarball = async <Value>(
+  path: string,
+  use: (tarball: BundleTarball) => Promise<Value>,
+): Promise<Value> => {
   const resources = new ArtifactResourceScope();
   let admitted = false;
   try {
@@ -223,11 +242,7 @@ export const writeEnvironmentBundle = async (
       path,
       async (handle, state) => {
         admitted = true;
-        return writeBundleFiles(input, plan, {
-          path,
-          handle,
-          size: state.size,
-        });
+        return use({ path, handle, size: state.size });
       },
       { resources },
     );
@@ -250,21 +265,19 @@ export const writeEnvironmentBundle = async (
           String(cause.code),
         )
       )
-        throw new AnalysisInputError(
-          ENVIRONMENT_EXPORT_OPERATION,
-          {
-            cause,
-            userMessage: `${path} must name a readable regular package tarball.`,
-          },
-          [
-            {
-              path: ["package_tarball"],
-              reason: "invalid_value",
-              message: "The package tarball must be an existing regular file.",
-            },
-          ],
-        );
+        throw packageTarballRefusal(path, cause);
     }
     throw cause;
   }
 };
+
+/** Retain one tarball instance across planning output writes and final stability verification. */
+export const writeEnvironmentBundle = (
+  input: EnvironmentExportInput,
+  plan: EnvironmentBundlePlan,
+): Promise<readonly WrittenBundleFile[]> =>
+  plan.packageSource.kind === "tarball"
+    ? withBundleTarball(plan.packageSource.path, (tarball) =>
+        writeBundleFiles(input, plan, tarball),
+      )
+    : writeBundleFiles(input, plan);
