@@ -20,6 +20,7 @@ import type {
   WriteCall,
   WriteResponse,
 } from "./environmentStateWriteRules.js";
+import { stampProblem } from "./environmentStateWriteStamps.js";
 import {
   integerOf,
   isUuid,
@@ -110,6 +111,15 @@ const listed = (members: readonly string[]): string => {
 const bodyContract = (body: WriteBody): string =>
   `accepted members: ${listed(body.accepted)}; members accepted only with their recorded value: ${listed(body.fixed.map(({ member }) => member))}; required: ${listed(body.required)}`;
 
+/** Recorded values up to this many characters are shown where a served write names them; a longer one is only named. */
+const SHOWN_VALUE_CHARS = 120;
+
+/** A recorded value as JSON text, when short enough to show. */
+export const shownValue = (value: JsonValue): string | undefined => {
+  const text = JSON.stringify(value);
+  return text.length <= SHOWN_VALUE_CHARS ? text : undefined;
+};
+
 /** Why a call's body does not fit the members the capture showed, if it does not; `shapes` gives each accepted member's JSON type, else the body's recorded kind. */
 export const bodyProblem = (
   body: WriteBody,
@@ -127,7 +137,7 @@ export const bodyProblem = (
     }
     if (fixed.has(member)) {
       if (!same(fixed.get(member), value))
-        return `Member ${member} is accepted only with the value the capture sent, because the application stored it differently (${bodyContract(body)}).`;
+        return `Member ${member} is accepted only with the value the capture sent, ${shownValue(fixed.get(member)!) ?? "too long to show here"}, because the application stored it differently or other recorded fields go with it (${bodyContract(body)}).`;
       continue;
     }
     if (!body.accepted.includes(member))
@@ -183,6 +193,8 @@ const ruledValue = (
     case "unique":
     case "renewed":
     case "clock":
+    case "nested-clock":
+    case "held-clock":
       return generate(rule);
     case "echo":
       return ok(Object.hasOwn(body, rule.field) ? body[rule.field] : undefined);
@@ -223,7 +235,7 @@ const templated = (
     : undefined;
 };
 
-/** Apply the rules that derive from fields already written: slugs and templates. */
+/** Apply the rules that derive from fields already written or the call: slugs, templates and stamps. */
 const derive = (
   rules: readonly FieldRule[],
   observed: JsonObject,
@@ -237,7 +249,9 @@ const derive = (
     } else if (rule.rule === "template") {
       const value = templated(observed, written, rule);
       if (value !== undefined) written[rule.field] = value;
-    }
+    } else if (rule.rule === "stamp") written[rule.field] = rule.value;
+    else if (rule.rule === "derived" && Object.hasOwn(sent, rule.member))
+      written[rule.field] = rule.value;
   }
 };
 
@@ -278,9 +292,34 @@ export const createdFields = (
   return ok(written);
 };
 
+/** Rules an update gives a new value on every call. */
+const REGENERATED: ReadonlySet<FieldRule["rule"]> = new Set([
+  "clock",
+  "nested-clock",
+  "held-clock",
+  "unique",
+]);
+const regenerated = (
+  rule: FieldRule,
+): rule is Extract<
+  GeneratedRule,
+  { rule: "clock" | "nested-clock" | "held-clock" | "unique" }
+> => REGENERATED.has(rule.rule);
+
+/** The value an echo or constant rule writes for a sent member, or a set rule on every call; undefined when it writes none. */
+const statedValue = (
+  rule: FieldRule,
+  sent: JsonObject,
+): JsonValue | undefined => {
+  if (rule.rule === "set") return rule.value;
+  if (rule.rule !== "echo" && rule.rule !== "constant") return undefined;
+  if (!Object.hasOwn(sent, rule.field)) return undefined;
+  return rule.rule === "echo" ? sent[rule.field] : rule.value;
+};
+
 /** The fields of an updated entity: sent echoed members, the constants the plan recorded, generated and derived changes. */
 export const updatedFields = (
-  plan: Pick<StateWritePlan, "rules" | "body">,
+  plan: Pick<StateWritePlan, "rules" | "body" | "address">,
   entity: { readonly before: JsonObject; readonly observed: JsonObject },
   call: WriteCall & { readonly id: string },
   generate: GenerateValue,
@@ -288,31 +327,30 @@ export const updatedFields = (
   const { before, observed } = entity;
   if (plan.body === null) return err("The tool has no modelled body.");
   const sent = call.body ?? {};
-  const problem = bodyProblem(plan.body, call, {
-    entity: { ...observed, ...before },
-    id: call.id,
-  });
+  const problem =
+    bodyProblem(plan.body, call, {
+      entity: { ...observed, ...before },
+      id: call.id,
+    }) ?? stampProblem(plan.rules, before, sent);
   if (problem !== undefined) return err(problem);
   const members = Object.keys(sent).filter(
     (member) => member !== plan.body?.identity,
   );
-  if (members.length === 0)
+  // An item action names its change in its path, so it may send nothing.
+  if (members.length === 0 && plan.address?.by !== "action")
     return err(
       `The call sends none of the members an update applies (${bodyContract(plan.body)}).`,
     );
   const written: JsonObject = { ...before };
   for (const rule of plan.rules) {
-    if (rule.rule === "echo" || rule.rule === "constant") {
-      if (!Object.hasOwn(sent, rule.field)) continue;
-      written[rule.field] =
-        rule.rule === "echo" ? sent[rule.field]! : rule.value;
-    } else if (rule.rule === "increment") {
+    const stated = statedValue(rule, sent);
+    if (stated !== undefined) written[rule.field] = stated;
+    else if (rule.rule === "increment") {
       const was = integerOf(before[rule.field]);
       if (was !== undefined)
         written[rule.field] = spelledLike(before[rule.field]!, was + 1);
     } else if (
-      rule.rule === "clock" ||
-      rule.rule === "unique" ||
+      regenerated(rule) ||
       // Child rows are renewed only on an entity that holds them.
       (rule.rule === "renewed" && Object.hasOwn(before, rule.field))
     ) {

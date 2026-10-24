@@ -3,10 +3,8 @@ import type { JsonValue } from "../jsonValue.js";
 import { ok } from "../result.js";
 import {
   isObject,
-  isStateWrite,
   locateItem,
   at,
-  same,
   type JsonObject,
   type StateDocument,
   type StateEntity,
@@ -31,7 +29,8 @@ import {
   contradictsEarlierCalls,
   disagreesWithCall,
   keptFields,
-  scalars,
+  rememberCall,
+  appliedUpdate,
   type UpdateCall,
   conflictsWithPlan,
   refinedBody,
@@ -42,7 +41,16 @@ import {
   viewFields,
   type Observed,
 } from "./environmentStateWriteObserve.js";
+import {
+  envelopeMember,
+  plannedObject,
+  restampedFields,
+} from "./environmentStateWriteStamps.js";
 import { readClock } from "./environmentStateWriteValues.js";
+import {
+  actionItemPath,
+  observationNeeds,
+} from "./environmentStateWriteAddress.js";
 import {
   pathValuesOf,
   type FieldRule,
@@ -68,6 +76,12 @@ export interface WriteDraft {
   readonly updates: UpdateCall[];
   /** The last value each sequence took, by field and, for a collection's sequence, collection; the next call must follow it. */
   readonly sequences: Map<string, number>;
+  /** The collection a create writes into when its own path names no state type: the one its returned id was read under. */
+  readonly linked?: string | undefined;
+  /** Fields an item action's call found already at the value it sets them to. */
+  readonly steady: Set<string>;
+  /** Unsent clocks a call left as they were in its own second, which it cannot show it stamps. */
+  readonly unstamped: Set<string>;
 }
 
 /** A write observation plus the fields its selected read view actually covers, if any. */
@@ -84,12 +98,15 @@ export interface WriteIo {
   readonly requestBody: (ordinal: number) => JsonValue | undefined;
   readonly emptyResponse: (ordinal: number) => boolean;
   readonly retain: (bytes: number) => void;
+  readonly queryOf: (ordinal: number) => string | null | undefined;
 }
 
 /** What the write gate reads: the manifest tools, the timeline, the read views and the initial state. */
 export interface WriteSimulationInput {
   readonly tools: readonly StateToolFacts[];
   readonly records: readonly StateRecordFacts[];
+  /** POST tools whose calls read state rather than change it. */
+  readonly readOnly: ReadonlySet<string>;
   readonly timed: boolean;
   readonly views: ReadonlyMap<string, StateView>;
   readonly types: readonly StateType[];
@@ -105,6 +122,8 @@ export interface EffectContext {
   readonly io: WriteIo;
   readonly records: readonly StateRecordFacts[];
   readonly timed: boolean;
+  /** Whether a record may change state: a write the capture does not show reading only. */
+  readonly isWrite: (record: StateRecordFacts) => boolean;
   readonly viewOf: (ordinal: number) => StateView | undefined;
   readonly idField: (type: string) => string;
   /** Mark a later read as a create's or update's observation, so it does not check that write. */
@@ -115,6 +134,8 @@ export interface EffectContext {
   readonly initialDocument: (tool: string) => StateDocument | undefined;
   /** The entities of a type the initial state held, whose values a sequence never reuses. */
   readonly startedWith: (type: string) => readonly StateEntity[];
+  /** Whether another tool's modelled write to the target awaits a check, which a later read must still make. */
+  readonly pending: (target: string) => boolean;
 }
 
 /** One recorded write: the record, its timeline index, its tool, and whether its plan only takes the recorded outcome. */
@@ -124,6 +145,8 @@ export interface WriteStep {
   readonly tool: StateToolFacts;
   /** Set once the plan has a reason: the write only brings the state to its recorded outcome. */
   readonly observeOnly: boolean;
+  /** Whether the call sent the query serving pins, its exemplar's, as every call before the plan is built does. */
+  readonly pinned: boolean;
 }
 
 /**
@@ -185,13 +208,18 @@ export const refuse = (
   if (!step.observeOnly) draft.plan.reason = reason;
 };
 
+/** A call's body object, none for a call serving refuses by its query; an entity write's is unwrapped from a one-element envelope, and once its plan is built only one sent with the exemplar's wrapping counts, as serving takes it. */
 export const requestObject = (
   context: EffectContext,
-  record: StateRecordFacts,
-): JsonObject | undefined => {
-  const body = context.io.requestBody(record.ordinal);
-  return isObject(body) ? body : undefined;
-};
+  step: WriteStep,
+  draft?: WriteDraft,
+): JsonObject | undefined =>
+  step.pinned
+    ? plannedObject(
+        context.io.requestBody(step.record.ordinal),
+        draft && { built: built(draft), envelope: draft.plan.body?.envelope },
+      )
+    : undefined;
 
 export const callOf = (
   step: WriteStep,
@@ -214,6 +242,26 @@ export const searchFrom = (context: EffectContext, step: WriteStep) => ({
   ...(context.timed ? { after: step.record.end } : {}),
   viewOf: context.viewOf,
   withBody: context.io.withBody,
+  queryOf: context.io.queryOf,
+});
+
+/** The later item reads of the entity a write resolved, as a forward search finds them. */
+export const itemReads = (
+  context: EffectContext,
+  entity: {
+    readonly type: string;
+    readonly idField: string;
+    readonly collection: string;
+    readonly id: string;
+  },
+) => ({
+  ...entity,
+  held: () => true,
+  isWrite: context.isWrite,
+  sameItem: (record: StateRecordFacts) => {
+    const found = itemTarget(context.state, entity.type, record);
+    return found.collection === entity.collection && found.id === entity.id;
+  },
 });
 
 /** The entity an update's response shows, located by its identity, else a later item read of the target the write resolved. */
@@ -226,8 +274,12 @@ const updatedObservation = (
     readonly collection: string;
     readonly id: string;
   },
-  required: readonly string[],
+  observing: {
+    readonly required: readonly string[];
+    readonly borrow: boolean;
+  },
 ): UpdateObservation | undefined => {
+  const { required, borrow } = observing;
   const own = context.io.withBody(
     step.record.ordinal,
     (body): Observed | undefined => {
@@ -250,17 +302,9 @@ const updatedObservation = (
     required.every((field) => Object.hasOwn(own.object, field))
   )
     return own;
+  if (!borrow) return undefined;
   const later = laterObservation(searchFrom(context, step), {
-    type: entity.type,
-    collection: entity.collection,
-    idField: entity.idField,
-    id: entity.id,
-    held: () => true,
-    isWrite: isStateWrite,
-    sameItem: (record) => {
-      const found = itemTarget(context.state, entity.type, record);
-      return found.collection === entity.collection && found.id === entity.id;
-    },
+    ...itemReads(context, entity),
     // With an answer or without one, only a read whose view shows every learned clock shows what this call stamped.
     covers: (view) => required.every((field) => view.fields.includes(field)),
   });
@@ -310,6 +354,25 @@ export const retainFixed = (
   if (fixed.length > 0) context.io.retain(64 + jsonTextCodeUnits(fixed) * 2);
 };
 
+/** An update's targets, and its recorded outcome: the entity takes what its observation shows, attributed to no tool. */
+const outcomes = (
+  context: EffectContext,
+  entity: StateEntity,
+  shown: JsonObject,
+) => {
+  const { type, collection, id } = entity;
+  const targets = [
+    entityTarget(type, collection, id),
+    collectionTarget(type, collection),
+  ];
+  const target = { type, collection, id };
+  const recorded = (): EffectResult => {
+    context.state.put(updatedEntity(entity, { ...entity.fields, ...shown }));
+    return { kind: "observed", targets, entity: target };
+  };
+  return { targets, target, recorded };
+};
+
 /** Build an update plan from its exemplar, or add what a later call showed. */
 const buildUpdate = (
   context: EffectContext,
@@ -339,7 +402,10 @@ const buildUpdate = (
         id: evidence.after.id,
       }),
     ),
-    body: evidence.explained.body,
+    body: {
+      ...evidence.explained.body,
+      ...envelopeMember(context.io.requestBody(ordinal)),
+    },
     rules: evidence.explained.rules,
   });
   draft.observed = evidence.after.object;
@@ -355,10 +421,40 @@ export const applyUpdate = (
   draft: WriteDraft,
   step: WriteStep,
 ): EffectResult => {
+  const action = draft.plan.address?.by === "action";
+  // The entity as serving names it.
+  const named = itemTarget(context.state, draft.plan.target!, {
+    path: action ? actionItemPath(step.record.path) : step.record.path,
+  });
+  // An item action names its change in its path, so it may send no body.
+  const body =
+    action &&
+    step.pinned &&
+    context.io.requestBody(step.record.ordinal) === undefined
+      ? {}
+      : requestObject(context, step, draft);
+  return updateEntity(context, draft, step, { ...named, body });
+};
+
+/** Apply a recorded update to the held entity a call names, with the members it wrote to that entity. */
+export const updateEntity = (
+  context: EffectContext,
+  draft: WriteDraft,
+  step: WriteStep,
+  named: {
+    readonly collection: string;
+    readonly id: string;
+    readonly body: JsonObject | undefined;
+  },
+): EffectResult => {
   const type = draft.plan.target!;
   const idField = context.idField(type);
-  // The entity as serving names it.
-  const { collection, id } = itemTarget(context.state, type, step.record);
+  const { collection, id, body } = named;
+  const needs = observationNeeds(
+    draft.plan,
+    { ...named, type, idField },
+    context.pending,
+  );
   const entity = context.state.entity(type, collection, id);
   const after =
     entity === undefined
@@ -367,26 +463,13 @@ export const applyUpdate = (
           context,
           step,
           { type, idField, collection, id },
-          draft.plan.rules.flatMap((rule) =>
-            rule.rule === "clock" ? [rule.field] : [],
-          ),
+          needs,
         );
   if (entity === undefined || after === undefined) {
     fail(draft, step, "no-observation");
     return UNKNOWN;
   }
-  const targets = [
-    entityTarget(type, collection, id),
-    collectionTarget(type, collection),
-  ];
-  const target = { type, collection, id };
-  const recorded = (): EffectResult => {
-    context.state.put(
-      updatedEntity(entity, { ...entity.fields, ...after.object }),
-    );
-    return { kind: "observed", targets, entity: target };
-  };
-  const body = requestObject(context, step.record);
+  const { targets, target, recorded } = outcomes(context, entity, after.object);
   if (step.observeOnly || body === undefined) {
     fail(draft, step, "body-unusable");
     return recorded();
@@ -404,6 +487,7 @@ export const applyUpdate = (
     ...(after.readFields === undefined ? {} : { readFields: after.readFields }),
     others: otherFields(context.state.ofType(type), { collection, id }),
     shown: shownBefore(context.viewOf, entity, after.ordinal),
+    action: needs.action,
   });
   if (explained.unexplained.length > 0 && !unknown) {
     refuse(draft, step, "unexplained-change");
@@ -418,12 +502,18 @@ export const applyUpdate = (
     return recorded();
   }
   buildUpdate(context, draft, step, { after, explained, idField });
+  const stored = restampedFields(
+    searchFrom(context, step),
+    itemReads(context, { type, idField, collection, id }),
+    after.object,
+    draft.plan.rules,
+  );
   // Serving reads the plan's observation, so the gate does too; generated values are this call's.
   const written = updatedFields(
     draft.plan,
     { before: entity.fields, observed: draft.observed! },
     { ...call, id },
-    (rule) => ok(after.object[rule.field]),
+    (rule) => ok(stored[rule.field]),
   );
   const kept = keptFields(entity.fields, after.object);
   const disagrees =
@@ -436,29 +526,18 @@ export const applyUpdate = (
   if (!written.ok || (disagrees && !unknown))
     refuse(draft, step, "unexplained-change");
   if (!written.ok || disagrees || unknown) return recorded();
-  const facts = { shown: scalars(after.object), sent: scalars(body), kept };
-  context.io.retain(
-    64 + jsonTextCodeUnits([...facts.shown, ...facts.sent, kept]) * 2,
+  rememberCall(
+    context.io.retain,
+    draft,
+    { before: entity.fields, after: after.object, sent: body, kept },
+    explained.unstamped,
   );
-  draft.updates.push(facts);
   context.io.retain(64 + jsonTextCodeUnits(written.value) * 2);
   context.state.put(updatedEntity(entity, written.value));
-  // A later read that also shows an unmodelled change checks only the members this call sent.
-  const sent = Object.keys(body).filter(
-    (member) => member !== draft.plan.body?.identity,
-  );
-  const derived = Object.keys(written.value).filter(
-    (field) =>
-      !Object.hasOwn(entity.fields, field) ||
-      !same(written.value[field], entity.fields[field]),
-  );
-  const changed = {
-    fields: [...new Set([...sent, ...derived])],
-    accumulated: draft.plan.rules.flatMap((rule) =>
-      rule.rule === "increment" ? [rule.field] : [],
-    ),
-  };
-  return { kind: "applied", targets, entity: target, fields: sent, changed };
+  return appliedUpdate(draft.plan, { targets, target }, entity.fields, {
+    written: written.value,
+    body,
+  });
 };
 
 /** Serving regenerates a learned clock on every update, so recorded calls must advance it. */
@@ -466,16 +545,21 @@ const contradictsGeneratedClock = (
   before: JsonObject,
   after: JsonObject,
   rules: readonly FieldRule[],
-  explained: readonly FieldRule[],
+  explained: ReturnType<typeof explainUpdate>,
 ): boolean =>
   rules.some((rule) => {
-    if (rule.rule !== "clock" || !Object.hasOwn(after, rule.field))
+    // A clock left in the call's own second cannot show whether it advanced.
+    if (
+      rule.rule !== "clock" ||
+      !Object.hasOwn(after, rule.field) ||
+      explained.unstamped.includes(rule.field)
+    )
       return false;
     const previous = readClock(before[rule.field]);
     if (previous === undefined) return false;
     const next = readClock(after[rule.field]);
     return (
-      !explained.some(
+      !explained.rules.some(
         (candidate) =>
           candidate.field === rule.field && candidate.rule === "clock",
       ) ||
@@ -492,41 +576,5 @@ const contradictsPlan = (
   explained: ReturnType<typeof explainUpdate>,
 ): boolean =>
   contradictsEarlierCalls(draft, explained.rules) ||
-  contradictsGeneratedClock(before, after, draft.plan.rules, explained.rules) ||
+  contradictsGeneratedClock(before, after, draft.plan.rules, explained) ||
   conflictsWithPlan(draft.plan, explained);
-
-/** Apply a recorded delete: the held entity leaves its collection. */
-export const applyDelete = (
-  context: EffectContext,
-  draft: WriteDraft,
-  step: WriteStep,
-): EffectResult => {
-  const type = draft.plan.target!;
-  const { collection, id } = itemTarget(context.state, type, step.record);
-  const entity = context.state.entity(type, collection, id);
-  if (entity === undefined) {
-    fail(draft, step, "no-observation");
-    return UNKNOWN;
-  }
-  const { ordinal } = step.record;
-  if (!built(draft) && !step.observeOnly)
-    Object.assign(draft.plan, {
-      exemplar_ordinal: ordinal,
-      response: context.io.withBody(ordinal, (body) =>
-        responseShapeOf(ordinal, body, context.io.emptyResponse(ordinal), {
-          idField: context.idField(type),
-          id,
-        }),
-      ),
-    });
-  context.state.remove(entity);
-  const targets = [
-    entityTarget(type, collection, id),
-    collectionTarget(type, collection),
-  ];
-  return {
-    kind: step.observeOnly ? "observed" : "applied",
-    targets,
-    entity: { type, collection, id },
-  };
-};

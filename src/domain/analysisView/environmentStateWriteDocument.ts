@@ -105,7 +105,7 @@ export const applyDocument = (
   if (initial !== undefined && !namesDocument(step.record.path, initial.path))
     return UNKNOWN;
   const value = context.state.document(tool);
-  const body = requestObject(context, step.record);
+  const body = requestObject(context, step);
   const pointer =
     value === undefined || body === undefined
       ? undefined
