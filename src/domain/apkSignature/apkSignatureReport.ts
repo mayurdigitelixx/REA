@@ -411,6 +411,8 @@ export const deriveApkPosture = (
         : [],
     ),
   );
+  // A present scheme can declare no signers; v1 is compared with the lowest
+  // scheme that names one.
   const v1Match = input.v1Present
     ? v1MatchesBlockSigners(
         input.v1SignerFingerprints,

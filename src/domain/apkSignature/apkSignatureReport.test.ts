@@ -248,6 +248,21 @@ describe("deriveApkPosture v1 comparison", () => {
     ).toBeNull();
   });
 
+  it("skips a present block scheme that declares no signers", () => {
+    // An empty v2 signer sequence must not hide the v3 signer.
+    const match = (v1Signers: string[], v3Signer: string) =>
+      deriveApkPosture({
+        ...base,
+        v1Present: true,
+        v2Present: true,
+        v3Present: true,
+        blockSchemes: blocks([], [v3Signer]),
+        v1SignerFingerprints: v1Signers,
+      }).posture.v1_signers_match_block_signers;
+    expect(match(["aa"], "aa")).toBe(true);
+    expect(match(["aa"], "bb")).toBe(false);
+  });
+
   it("compares v1 with a v3 lineage's original certificate when v2 is absent", () => {
     // Rotated v1 + v3 without v2: v1 keeps the original key, v3 the newest.
     const rotated = v1(["old"], [], [signer("new", decoded("old", "new"))]);
