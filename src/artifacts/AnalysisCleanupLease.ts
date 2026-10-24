@@ -7,7 +7,6 @@ import type {
 export class AnalysisCleanupLease {
   #released = false;
   #releasePromise: Promise<void> | undefined;
-  #errors: WeakRef<AnalysisError>[] = [];
   readonly #groups = new Set<AnalysisCleanupLeaseGroup>();
 
   /** Whether this exact owner has confirmed release. */
@@ -64,7 +63,6 @@ export class AnalysisCleanupLease {
       .then(async () => {
         await this.cleanup();
         this.#released = true;
-        this.#resolveBoundErrors();
         for (const group of this.#groups) group.ownerReleased(this);
         this.#groups.clear();
       })
@@ -77,14 +75,7 @@ export class AnalysisCleanupLease {
 
   /** Binding can follow a concurrent retry that already confirmed release. */
   bindCleanupError(error: AnalysisError): void {
-    if (this.#released) {
-      error.resolveCleanup();
-      return;
-    }
-    this.#errors = [
-      ...this.#errors.filter((reference) => reference.deref() !== undefined),
-      new WeakRef(error),
-    ];
+    new AnalysisCleanupLeaseGroup(error, [this]);
   }
 
   /** Bind one aggregate error to every exact lease in a failed retry set. */
@@ -96,11 +87,6 @@ export class AnalysisCleanupLease {
     for (const retained of this.#groups)
       if (!retained.hasLiveError) this.#groups.delete(retained);
     this.#groups.add(group);
-  }
-
-  #resolveBoundErrors(): void {
-    for (const reference of this.#errors) reference.deref()?.resolveCleanup();
-    this.#errors = [];
   }
 }
 

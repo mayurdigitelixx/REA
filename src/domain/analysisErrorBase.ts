@@ -132,6 +132,14 @@ export abstract class AnalysisError extends Error {
     ];
   }
 
+  /** Whether cleanup follows an explicit owner or dependent errors. */
+  get hasCleanupOwner(): boolean {
+    return (
+      this.#cleanupResourceOwner !== undefined ||
+      this.#cleanupDependencies !== undefined
+    );
+  }
+
   /** Bind attribution only to the producer that owns the complete cleanup set. */
   bindCleanupResourceOwner(owner: AnalysisCleanupResourceOwner): this {
     this.#cleanupResourceOwner = owner;

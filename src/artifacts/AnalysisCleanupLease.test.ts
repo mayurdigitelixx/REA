@@ -23,6 +23,7 @@ it.each(["before release", "after release"])(
     if (binding === "before release") lease.bindCleanupError(error);
     await lease.release();
     if (binding === "after release") lease.bindCleanupError(error);
+    expect(error.hasCleanupOwner).toBe(true);
     expect(error.cleanupIncomplete).toBe(false);
     expect(error.cause).toBe(cause);
     await lease.release();
