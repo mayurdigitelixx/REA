@@ -29,6 +29,7 @@ import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { javascriptApplicationOptions } from "../cliObservationOptions.js";
 import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import { localPathStringSchema } from "../domain/localPath.js";
+import type { ExecutableFormatHint } from "../domain/dosCom.js";
 import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { registerDecompileDirectoryCommand } from "./decompileDirectoryCommand.js";
 
@@ -240,7 +241,7 @@ const routesToJavaScriptAnalysis = async (
   path: string,
   options: {
     readonly snapshot?: string | undefined;
-    readonly "target-format"?: "dos-com" | "raw-binary" | undefined;
+    readonly "target-format"?: ExecutableFormatHint | undefined;
     readonly architecture?: string | undefined;
     readonly "entry-point"?: string | undefined;
     readonly provider?: string | undefined;
