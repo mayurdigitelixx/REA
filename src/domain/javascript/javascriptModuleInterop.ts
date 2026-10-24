@@ -7,6 +7,7 @@ import {
   resolveSemanticBindingState,
   semanticScopeId,
   semanticStableInitializer,
+  semanticAmbientPathMayHaveChanged,
   type JavaScriptSemanticAnalysisState,
   type JavaScriptSemanticBindingState,
 } from "./javascriptSemanticState.js";
@@ -226,18 +227,32 @@ export const createSemanticModuleInterop = (
     const method = path.at(-1);
     const invocationMethod =
       method === "bind" || method === "call" || method === "apply";
-    return writes.some(
-      (write) =>
-        (write.scope === scope || write.scope === "intrinsic") &&
-        write.offset < (capture.start ?? -1) &&
-        (write.coverage.covers(path) ||
+    return (
+      (path[0] === "intrinsic" &&
+        (semanticAmbientPathMayHaveChanged(state, capture, [
+          "global",
+          ...path.slice(1),
+        ]) ||
           (invocationMethod &&
-            write.coverage.covers([
-              "intrinsic",
+            semanticAmbientPathMayHaveChanged(state, capture, [
+              "global",
               "Function",
               "prototype",
-              method,
-            ]))),
+              method!,
+            ])))) ||
+      writes.some(
+        (write) =>
+          (write.scope === scope || write.scope === "intrinsic") &&
+          write.offset < (capture.start ?? -1) &&
+          (write.coverage.covers(path) ||
+            (invocationMethod &&
+              write.coverage.covers([
+                "intrinsic",
+                "Function",
+                "prototype",
+                method,
+              ]))),
+      )
     );
   };
 

@@ -281,17 +281,17 @@ describe.skipIf(process.platform !== "darwin")(
               ],
             },
             bundle: { identifier: "com.example.types", executable: "App" },
-            // An XML source also records its successful native format validation.
-            provenance:
-              format === "xml"
+            provenance: [
+              expect.objectContaining({ tool: "file" }),
+              ...(format === "xml"
                 ? [
-                    { tool: "file" },
-                    {
+                    expect.objectContaining({
                       tool: "plutil",
                       command: ["/usr/bin/plutil", "-lint", "--", "$PLIST"],
-                    },
+                    }),
                   ]
-                : [{ tool: "file" }],
+                : []),
+            ],
             limitations: [expect.stringContaining("2 non-finite real")],
           },
         });

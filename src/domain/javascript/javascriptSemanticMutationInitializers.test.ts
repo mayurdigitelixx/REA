@@ -3,10 +3,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   semanticBindingAtRead,
+  semanticEffectTimingAtStore,
   semanticMutationInitializers,
   semanticTopLevelEffectFollowsCapture,
 } from "./javascriptSemanticMutationInitializers.js";
 import type { JavaScriptSemanticBindingState } from "./javascriptSemanticState.js";
+import { indexJavaScriptBindingsWithReceiversSteps } from "./javascriptSemanticAnalysis.js";
+import { semanticProjectedSourceFactsAtRead } from "./javascriptSemanticProjectedSources.js";
+import { completeSemanticSteps } from "./javascriptSemanticTraversal.js";
 import { traverseJavaScriptAst } from "./javascriptSemanticTraversal.js";
 import { parseJavaScriptSource } from "./javascriptSourceParser.js";
 
@@ -125,4 +129,109 @@ describe("parameter references copied into function body bindings", () => {
       expect(origins.initializers).toContain(assigned);
     },
   );
+});
+
+it.each([false, true])(
+  "selects local setter effects before a target store (installed first: %s)",
+  (first) => {
+    const effect =
+      'Object.defineProperty(proto,"p",{set(value){value.get=fetch}})';
+    const assignment = first
+      ? `[box[(${effect},"q")],box.p]=[0,Map.prototype]`
+      : `[box.p,box[(${effect},"q")]]=[Map.prototype,0]`;
+    const source = `const proto={};const box={__proto__:proto};${assignment};`;
+    const parsed = parseJavaScriptSource(source);
+    if (parsed === null) throw new Error("Expected a local setter fixture");
+    const index = completeSemanticSteps(
+      indexJavaScriptBindingsWithReceiversSteps(parsed.program),
+    );
+    completeSemanticSteps(index.indexMemberMutationFactsSteps());
+    let mutation: t.AssignmentExpression | undefined;
+    let target: t.MemberExpression | undefined;
+    let descriptor: t.CallExpression | undefined;
+    traverseJavaScriptAst(parsed.program, {
+      enter(node) {
+        if (t.isAssignmentExpression(node) && t.isArrayPattern(node.left))
+          mutation = node;
+        if (
+          t.isMemberExpression(node) &&
+          t.isIdentifier(node.object, { name: "box" }) &&
+          t.isIdentifier(node.property, { name: "p" })
+        )
+          target = node;
+        if (
+          t.isCallExpression(node) &&
+          t.isMemberExpression(node.callee) &&
+          t.isIdentifier(node.callee.property, { name: "defineProperty" })
+        )
+          descriptor = node;
+      },
+    });
+    const binding = [...index.bindings.bindingsById.values()].find(
+      ({ name }) => name === "proto",
+    );
+    const reference = descriptor?.arguments[0];
+    if (
+      mutation === undefined ||
+      target === undefined ||
+      binding === undefined ||
+      !t.isIdentifier(reference)
+    )
+      throw new Error("Expected captured target and local prototype");
+    const facts = semanticProjectedSourceFactsAtRead(
+      binding,
+      reference,
+      ["p"],
+      index.bindings,
+      true,
+      mutation,
+      [],
+      { beforeStore: { mutation, target } },
+    );
+    // The descriptor call may expose its local target. Its effect is relevant
+    // only when that call precedes this leaf's completed store.
+    expect(facts === undefined).toBe(first);
+  },
+);
+
+it("preserves target identity and unknown positions across cached store queries", () => {
+  const parsed = parseJavaScriptSource(
+    "const box={};[box.a,box.b,box.c]=[1,2,3];[box.c,box.b,box.a]=[4,5,6];",
+  );
+  if (parsed === null) throw new Error("Expected ordered pattern fixtures");
+  const index = completeSemanticSteps(
+    indexJavaScriptBindingsWithReceiversSteps(parsed.program),
+  );
+  const mutations = parsed.program.body.flatMap((statement) =>
+    t.isExpressionStatement(statement) &&
+    t.isAssignmentExpression(statement.expression)
+      ? [statement.expression]
+      : [],
+  );
+  for (const mutation of mutations) {
+    if (!t.isArrayPattern(mutation.left))
+      throw new Error("Expected array targets");
+    const [before, target, after] = mutation.left.elements;
+    if (
+      !t.isMemberExpression(before) ||
+      !t.isMemberExpression(target) ||
+      !t.isMemberExpression(after)
+    )
+      throw new Error("Expected member target identities");
+    const store = { mutation, target };
+    const timing = (storeTarget: t.MemberExpression) =>
+      semanticEffectTimingAtStore(
+        store,
+        { node: mutation, storeTarget },
+        index.bindings,
+      );
+    expect(timing(before)).toBe("before");
+    expect(timing(target)).toBe("after");
+    expect(timing(after)).toBe("after");
+    // A structurally equal member from another occurrence supplies no proof.
+    expect(timing(t.cloneNode(before))).toBe("unknown");
+    expect(
+      semanticEffectTimingAtStore(store, { node: mutation }, index.bindings),
+    ).toBe("unknown");
+  }
 });

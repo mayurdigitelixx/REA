@@ -387,7 +387,9 @@ printf '%s\n' 'C:\Users\runner with spaces\AppData\Local\npm-cache'
           expect(setup?.with).not.toHaveProperty("cache", "npm");
           const npmCiIndex = steps.findIndex(
             (candidate, candidateIndex) =>
-              candidateIndex > index && candidate.run === "npm ci",
+              candidateIndex > index &&
+              typeof candidate.run === "string" &&
+              /^npm ci(?: --engine-strict=false)?$/u.test(candidate.run),
           );
           expect(
             npmCiIndex,

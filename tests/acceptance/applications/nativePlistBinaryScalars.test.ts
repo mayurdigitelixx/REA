@@ -171,7 +171,13 @@ describe.skipIf(process.platform !== "darwin")(
             separators: "a\u0085b\u2028c\u2029d",
             payload: { $plist_type: "data", base64: "AAEC" },
           },
-          provenance: [{ tool: "file" }],
+          provenance: [
+            expect.objectContaining({ tool: "file" }),
+            expect.objectContaining({
+              tool: "plutil",
+              command: ["/usr/bin/plutil", "-lint", "--", "$PLIST"],
+            }),
+          ],
           limitations: [],
         });
         expect(await readFile(binaryPath)).toEqual(binaryBytes);

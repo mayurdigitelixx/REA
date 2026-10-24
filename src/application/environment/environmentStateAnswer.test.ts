@@ -62,6 +62,7 @@ const answer = (
 it("finds state entities using the recorded path's repeated separators", () => {
   const serving = servingFrom([
     ["GET", "/api//books/1", { id: 1, title: "Book" }],
+    ["GET", "/api//books/2", { id: 2, title: "Other" }],
   ]);
   const tool = serving.source.manifest.tools.find(
     (candidate) => candidate.path_template === "/api//books/{numeric}",

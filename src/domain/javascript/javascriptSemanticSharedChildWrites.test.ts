@@ -1,7 +1,7 @@
 import { createContext, runInContext, runInNewContext } from "node:vm";
 import { expect, it } from "vitest";
 
-import { analyzeJavaScriptStaticSource } from "./javascriptStaticAnalysis.js";
+import { analyzeCommonJsStaticFixture } from "../../../tests/fixtures/javascriptCommonJsAnalysis.js";
 import * as t from "@babel/types";
 import { parseJavaScriptSource } from "./javascriptSourceParser.js";
 import { indexJavaScriptBindingsWithReceiversSteps } from "./javascriptSemanticAnalysis.js";
@@ -149,7 +149,7 @@ it.each(
       );
     }
     expect(hostCalls).toEqual(expected ? ["./shared.cjs"] : []);
-    const result = analyzeJavaScriptStaticSource(source);
+    const result = analyzeCommonJsStaticFixture(source);
     expect(result.parse_error_count).toBe(0);
     expect(
       result.references.filter(
@@ -179,7 +179,7 @@ it.each([
 ])(
   "retains host eligibility across an opaque shared receiver: $kind",
   ({ source, iterator }) => {
-    const analysis = analyzeJavaScriptStaticSource(source);
+    const analysis = analyzeCommonJsStaticFixture(source);
     expect(analysis.references).toContainEqual(
       expect.objectContaining({ kind: "require", specifier: null }),
     );
@@ -267,7 +267,7 @@ it.each([
   "retains a possible shared receiver when identity is incomplete: %s",
   (replacement) => {
     const expression = "box.child.inner.make().require('./shared.cjs')";
-    const result = analyzeJavaScriptStaticSource(
+    const result = analyzeCommonJsStaticFixture(
       `const old={child:{inner:{make:()=>({})}}};const box={...old};${replacement}old.child.inner.make=()=>module;${expression};`,
     );
     expect(result.parse_error_count).toBe(0);
@@ -285,7 +285,7 @@ it.each([16, 600])(
       (_, index) => `p${index}:{make:()=>({})}`,
     ).join(",");
     const expression = "box.child.inner.make().require('./shared.cjs')";
-    const result = analyzeJavaScriptStaticSource(
+    const result = analyzeCommonJsStaticFixture(
       `const old={child:{inner:{make:()=>({})}}};const box={...old};old.child={${properties}};old.child[key].make=()=>module;${expression};`,
     );
     expect(result.parse_error_count).toBe(0);

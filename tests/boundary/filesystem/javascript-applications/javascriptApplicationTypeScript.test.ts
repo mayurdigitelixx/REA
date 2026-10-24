@@ -86,7 +86,7 @@ it("resolves erased wrappers through the composed application graph", async () =
   `;
   const analysis = await analyzeFiles(
     new Map([
-      ["app.mts", source],
+      ["app.cts", source],
       ["dependency.ts", "export const value = 1;\n"],
     ]),
   );
@@ -123,7 +123,7 @@ it("resolves erased wrappers through the composed application graph", async () =
       }),
     }),
   );
-  expect(parseJavaScriptSource(source, "app.mts")?.errors).toEqual([]);
+  expect(parseJavaScriptSource(source, "app.cts")?.errors).toEqual([]);
 });
 
 it.each([

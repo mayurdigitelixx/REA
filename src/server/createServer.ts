@@ -1,3 +1,4 @@
+import { configuredUpdateNoticeFactory } from "./UpdateNotices.js";
 import { pcapCaptureHostSupported } from "../domain/pcap/pcapAnalysis.js";
 import { createGpuCodeObjectsService } from "../composition/gpu.js";
 import { registerGpuCodeObjectsTools } from "./registerGpuCodeObjectsTools.js";
@@ -506,6 +507,8 @@ export const createServer = (
       selectCompactInputSchemaPresentation(environment),
       omitOutputSchemas,
     );
+  if (options.mcpServer === undefined)
+    server.updateNoticeFactory = configuredUpdateNoticeFactory(environment);
   if (options.mcpServer !== undefined) {
     server.attachRuntime(
       session === undefined

@@ -60,10 +60,12 @@ export interface FilesystemFailureDetail {
 }
 
 /** Parse known filesystem failures once, separating semantics from host presentation. */
-export const filesystemFailureDetail = (
+export const filesystemFailureFacts = (
   cause: unknown,
   operation: string,
-): FilesystemFailureDetail | undefined => {
+):
+  | { readonly systemCode: string; readonly detail: FilesystemFailureDetail }
+  | undefined => {
   if (!(cause instanceof Error)) return undefined;
   const code: unknown = Reflect.get(cause, "code");
   if (typeof code !== "string" || !FILESYSTEM_ERROR_CODES.has(code))
@@ -74,8 +76,11 @@ export const filesystemFailureDetail = (
       : `${operation}: ${code}`;
   const localDiagnostic = `${operation}: ${cause.message}`;
   return {
-    message,
-    ...(localDiagnostic === message ? {} : { localDiagnostic }),
+    systemCode: code,
+    detail: {
+      message,
+      ...(localDiagnostic === message ? {} : { localDiagnostic }),
+    },
   };
 };
 
@@ -89,13 +94,14 @@ export const rootFilesystemFailure = (
       readonly message: string;
     }
   | undefined => {
-  if (!(cause instanceof Error)) return undefined;
-  const code: unknown = Reflect.get(cause, "code");
-  if (typeof code !== "string" || !FILESYSTEM_ERROR_CODES.has(code))
-    return undefined;
+  const facts = filesystemFailureFacts(cause, operation);
+  if (facts === undefined) return undefined;
   return {
-    code: code === "ENOENT" || code === "ENOTDIR" ? "invalid-root" : "io",
-    message: `${operation}: ${cause.message}`,
+    code:
+      facts.systemCode === "ENOENT" || facts.systemCode === "ENOTDIR"
+        ? "invalid-root"
+        : "io",
+    message: facts.detail.localDiagnostic ?? facts.detail.message,
   };
 };
 

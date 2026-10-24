@@ -13,6 +13,7 @@ import { projectAnalysisError } from "../../../src/domain/analysisErrorProjectio
 import { javaScriptRuntime } from "../../../src/domain/runtimeVersion.js";
 import { JavaScriptAnalysisWorker } from "../../../src/javascript/analysis/JavaScriptAnalysisWorker.js";
 import {
+  JAVASCRIPT_ANALYSIS_WORKER_DEFAULTS,
   javaScriptWorkerMessageSchema,
   type JavaScriptWorkerMessage,
 } from "../../../src/javascript/analysis/JavaScriptAnalysisWorkerProtocol.js";
@@ -20,9 +21,9 @@ import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.
 import type { JavaScriptArtifactFile } from "../../../src/domain/javascript/javascriptArtifactFiles.js";
 import { staticCheckpointFacts } from "../../fixtures/javascriptWorkerCheckpoint.js";
 
-const observeWorkerFrames = (
+const observeWorkerLines = (
   stdout: Readable | null | undefined,
-  observe: (frame: JavaScriptWorkerMessage, beforeEof: boolean) => void,
+  observe: (line: string, beforeEof: boolean) => void,
 ): void => {
   if (stdout === null || stdout === undefined)
     throw new Error("Expected fixture worker stdout pipe");
@@ -32,13 +33,38 @@ const observeWorkerFrames = (
     if (event !== "data") return;
     stdout.off("newListener", attach);
     createInterface({ input: stdout }).on("line", (line) =>
-      observe(
-        javaScriptWorkerMessageSchema.parse(JSON.parse(line)),
-        !stdout.readableEnded,
-      ),
+      observe(line, !stdout.readableEnded),
     );
   };
   stdout.on("newListener", attach);
+};
+
+const observeWorkerFrames = (
+  stdout: Readable | null | undefined,
+  observe: (frame: JavaScriptWorkerMessage, beforeEof: boolean) => void,
+): void =>
+  observeWorkerLines(stdout, (line, beforeEof) =>
+    observe(javaScriptWorkerMessageSchema.parse(JSON.parse(line)), beforeEof),
+  );
+
+const abortAfterObservedWorkerFailure = (
+  stdout: Readable | null | undefined,
+  controller: AbortController,
+  message: string,
+  reason: unknown,
+  beforeAbort?: () => void,
+): void => {
+  let queued = false;
+  observeWorkerFrames(stdout, (frame) => {
+    if (queued || frame.kind !== "failure" || frame.message !== message) return;
+    queued = true;
+    // The owned protocol reader admits every frame in this data event before
+    // the microtask runs; no elapsed delay competes with analysis completion.
+    queueMicrotask(() => {
+      beforeAbort?.();
+      controller.abort(reason);
+    });
+  });
 };
 
 it("preserves buffered startup bytes until the runtime owns stdout", async () => {
@@ -205,10 +231,12 @@ it("clears a consumed resource frame before the next reusable worker job", async
           `${ready} let count=0; require("node:readline").createInterface({input:process.stdin}).on("line", line => { const {id}=JSON.parse(line); const first=++count===1; const response={kind:"failure",id,reason:first?"resource":"output",resource:first?"memory":null,limits:null,message:first?"first resource response":"second job output response"}; process.stdout.write(JSON.stringify(response)+"\\n"); if(!first)setInterval(()=>{},1000); });`,
         ],
       });
-      launched.process.stdout?.on("data", (chunk: Buffer | string) => {
-        if (String(chunk).includes("second job output response"))
-          setTimeout(() => controller.abort("abort after second response"), 5);
-      });
+      abortAfterObservedWorkerFailure(
+        launched.process.stdout,
+        controller,
+        "second job output response",
+        "abort after second response",
+      );
       return launched;
     },
   );
@@ -277,6 +305,8 @@ it("keeps coalesced static and resource frames in FIFO order and reuses the work
 
 it("retains coalesced static evidence when abort follows a resource frame", async () => {
   const controller = new AbortController();
+  let analysisPending = true;
+  let abortedDuringAnalysis = false;
   const encodedStatic = JSON.stringify(staticCheckpointFacts);
   const worker = new JavaScriptAnalysisWorker(
     { heapMb: 128, timeoutMs: 30_000 },
@@ -288,19 +318,25 @@ it("retains coalesced static evidence when abort follows a resource frame", asyn
           `${ready} const fs=require("node:fs"); const {createHash}=require("node:crypto"); const staticFacts=JSON.parse(${JSON.stringify(encodedStatic)}); require("node:readline").createInterface({input:process.stdin}).on("line", line => { const request=JSON.parse(line); if(!request.file)return; const text=JSON.stringify(staticFacts); fs.writeFileSync(request.id+".static.json",text); const frames=[{kind:"static",id:request.id,bytes:Buffer.byteLength(text),sha256:createHash("sha256").update(text).digest("hex")},{kind:"failure",id:request.id,reason:"resource",resource:"memory",limits:null,message:"resource failure before abort"}]; process.stdout.write(frames.map(frame=>JSON.stringify(frame)).join("\\n")+"\\n"); });`,
         ],
       });
-      launched.process.stdout?.on("data", (chunk: Buffer | string) => {
-        if (String(chunk).includes("resource failure before abort"))
-          setTimeout(() => controller.abort(null), 5);
-      });
+      abortAfterObservedWorkerFailure(
+        launched.process.stdout,
+        controller,
+        "resource failure before abort",
+        null,
+        () => {
+          abortedDuringAnalysis = analysisPending;
+        },
+      );
       return launched;
     },
   );
   try {
-    const result = await worker.analyze(
-      file,
-      { nodes: 100, unknowns: 100 },
-      controller.signal,
-    );
+    const result = await worker
+      .analyze(file, { nodes: 100, unknowns: 100 }, controller.signal)
+      .finally(() => {
+        analysisPending = false;
+      });
+    expect(abortedDuringAnalysis).toBe(true);
     expect(controller.signal.aborted).toBe(true);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -578,7 +614,6 @@ it("includes the owned process output-loss marker in captured truncation", async
 
 it("selects a control-frame budget failure observed before caller abort", async () => {
   const controller = new AbortController();
-  let stdoutBytes = 0;
   let abortQueued = false;
   const worker = new JavaScriptAnalysisWorker(
     { heapMb: 128, timeoutMs: 30_000 },
@@ -590,11 +625,14 @@ it("selects a control-frame budget failure observed before caller abort", async 
           `${ready} ${phaseAfterRequest} process.stdout.write("x".repeat(1_100_000)+"\\n", () => process.exit(7)); });`,
         ],
       });
-      launched.process.stdout?.on("data", (chunk: Buffer | string) => {
-        stdoutBytes += Buffer.byteLength(chunk);
-        if (stdoutBytes > 65_536 && !abortQueued) {
+      observeWorkerLines(launched.process.stdout, (line) => {
+        if (
+          Buffer.byteLength(line) >
+            JAVASCRIPT_ANALYSIS_WORKER_DEFAULTS.protocolBytes &&
+          !abortQueued
+        ) {
           abortQueued = true;
-          setTimeout(() => controller.abort("late caller abort"), 20);
+          queueMicrotask(() => controller.abort("late caller abort"));
         }
       });
       return launched;
@@ -1039,12 +1077,15 @@ it("preserves a complete current-job failure parsed before caller abort", async 
           `${ready} process.stdin.once("data", chunk => { const id=JSON.parse(String(chunk)).id; process.stdout.write(JSON.stringify({kind:"phase",id,phase:"parse"})+"\\n"); setTimeout(() => process.stdout.write(JSON.stringify({kind:"failure",id,reason:"output",resource:null,limits:null,message:"complete current-job failure"})+"\\n"),1); setInterval(()=>{},1000); });`,
         ],
       });
-      launched.process.stdout?.on("data", (chunk: Buffer | string) => {
-        if (String(chunk).includes("complete current-job failure")) {
+      abortAfterObservedWorkerFailure(
+        launched.process.stdout,
+        controller,
+        "complete current-job failure",
+        "abort after parsed failure",
+        () => {
           completeFrameSeen = true;
-          setTimeout(() => controller.abort("abort after parsed failure"), 5);
-        }
-      });
+        },
+      );
       return launched;
     },
   );
@@ -1081,12 +1122,15 @@ it("does not let a wrong-job failure frame override later caller abort", async (
           `${ready} process.stdin.once("data", () => { const id="00000000-0000-4000-8000-000000000000"; process.stdout.write(JSON.stringify({kind:"failure",id,reason:"output",resource:null,limits:null,message:"unrelated job failure"})+"\\n"); setInterval(()=>{},1000); });`,
         ],
       });
-      launched.process.stdout?.on("data", (chunk: Buffer | string) => {
-        if (String(chunk).includes("unrelated job failure")) {
+      abortAfterObservedWorkerFailure(
+        launched.process.stdout,
+        controller,
+        "unrelated job failure",
+        reason,
+        () => {
           completeFrameSeen = true;
-          setTimeout(() => controller.abort(reason), 5);
-        }
-      });
+        },
+      );
       return launched;
     },
   );

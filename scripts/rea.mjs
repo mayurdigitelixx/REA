@@ -166,6 +166,7 @@ if (!(await compiledRuntimeExists(runtimeFiles))) {
               try {
                 await resultOutput?.finishSdkOutput(code);
               } catch (cause) {
+                recordClosedStdout(cause);
                 if (!stdoutClosed)
                   process.stderr.write(`${cleanupFailureText(cause)}\n`);
                 if (status === 0) status = 1;
@@ -181,6 +182,7 @@ if (!(await compiledRuntimeExists(runtimeFiles))) {
           .catch((writeFailure) => {
             // Recovery writes outside Incur's command boundary. A reader that
             // declined this document keeps the same quiet SIGPIPE outcome.
+            recordClosedStdout(writeFailure);
             if (!stdoutClosed) throw writeFailure;
             return true;
           });
@@ -190,10 +192,14 @@ if (!(await compiledRuntimeExists(runtimeFiles))) {
       if (!wroteOutput && !resultOutput?.handled)
         writeStdout(renderEmptyFilteredCliOutput(outputOptions) ?? "");
       // An SDK failure exits through the callback, which owns its pending write.
-      if (!exiting)
-        await resultOutput?.finishSdkOutput(
-          typeof process.exitCode === "number" ? process.exitCode : 0,
-        );
+      if (!exiting && !stdoutClosed)
+        await resultOutput
+          ?.finishSdkOutput(
+            typeof process.exitCode === "number" ? process.exitCode : 0,
+          )
+          .catch((cause) => {
+            if (!recordClosedStdout(cause)) throw cause;
+          });
     }
   } catch (cause) {
     if (cause?.code === "EPIPE") {
@@ -240,14 +246,18 @@ function cleanupFailureText(cleanup) {
 
 function guardClosedStdout() {
   process.stdout.on("error", (cause) => {
-    if (cause?.code === "EPIPE") {
-      stdoutClosed = true;
-      process.exitCode = SIGPIPE_EXIT_STATUS;
-      return;
-    }
+    if (recordClosedStdout(cause)) return;
     // Other failures stay unhandled unless a pending JSON write reports them.
     if (process.stdout.listenerCount("error") === 1) throw cause;
   });
+}
+
+/** A pending write callback can report EPIPE before the stream error event. */
+function recordClosedStdout(cause) {
+  if (cause?.code !== "EPIPE") return false;
+  stdoutClosed = true;
+  process.exitCode = SIGPIPE_EXIT_STATUS;
+  return true;
 }
 
 function writeStdout(output) {

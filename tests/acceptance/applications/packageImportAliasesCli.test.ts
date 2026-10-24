@@ -73,7 +73,7 @@ const refusedAliases = {
   "#encoded-separator": {
     target: ["./con%2ffig.cjs", "./config.cjs"],
     status: "rejected",
-    limitation: "separator bytes",
+    limitation: "slash or backslash bytes",
   },
   "#missing-url": {
     target: ["./miss\ting.cjs", "./config.cjs"],
@@ -261,7 +261,11 @@ const sourceEvidence = (
       ? {}
       : {
           limitations: expect.arrayContaining([
-            expect.stringContaining(limitation),
+            limitation === "slash or backslash bytes"
+              ? expect.stringMatching(
+                  /(?:encoded separator|slash or backslash) bytes/u,
+                )
+              : expect.stringContaining(limitation),
           ]),
         }),
   });

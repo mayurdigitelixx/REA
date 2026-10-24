@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { buildBinary, parse } from "plist";
+import { parse } from "plist";
 import { expect, it } from "vitest";
 
 import { inspectBundleKeyedArchive } from "../../../../src/artifacts/apple/KeyedArchiveReader.js";
 import { nativeFixture } from "../../../fixtures/nativeCommands.js";
+import { buildBinaryKeyedArchive } from "../../../fixtures/binaryKeyedArchive.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
 
 it.each(["utf8", "utf8-bom", "utf16le", "utf16be", "binary"] as const)(
@@ -15,15 +16,13 @@ it.each(["utf8", "utf8-bom", "utf16le", "utf16be", "binary"] as const)(
     const root = await createTestTempDirectory("rea-keyed-encoding-");
     const xml = await nativeFixture("archive-xml-encoding/archive.xml");
     const utf16 = Buffer.from(xml.replace("UTF-8", "UTF-16"), "utf16le");
-    // The binary builder emits type-8 records for UID; CF$UID is XML's convention.
-    const binarySource = xml.replaceAll("<key>CF$UID</key>", "<key>UID</key>");
     const bytes =
       encoding === "utf8"
         ? Buffer.from(xml)
         : encoding === "utf8-bom"
           ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(xml)])
           : encoding === "binary"
-            ? Buffer.from(buildBinary(parse(binarySource)))
+            ? Buffer.from(buildBinaryKeyedArchive(parse(xml)))
             : Buffer.concat([
                 Buffer.from(
                   encoding === "utf16le" ? [0xff, 0xfe] : [0xfe, 0xff],
@@ -67,8 +66,6 @@ it.each(["utf8-as-utf16", "utf16-as-utf8"] as const)(
   async (kind) => {
     const root = await createTestTempDirectory("rea-keyed-encoding-");
     const xml = await nativeFixture("archive-xml-encoding/archive.xml");
-    // The binary builder emits type-8 records for UID; CF$UID is XML's convention.
-    const binarySource = xml.replaceAll("<key>CF$UID</key>", "<key>UID</key>");
     const bytes =
       kind === "utf8-as-utf16"
         ? Buffer.from(xml.replace("UTF-8", "UTF-16"))

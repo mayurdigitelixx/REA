@@ -1,3 +1,4 @@
+import { buildBinaryKeyedArchive } from "../../fixtures/binaryKeyedArchive.js";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -39,7 +40,7 @@ cliTest.for(["xml", "binary"] as const)(
       ],
     };
     const bytes = Buffer.from(
-      format === "binary" ? buildBinary(archive) : build(archive),
+      format === "binary" ? buildBinaryKeyedArchive(archive) : build(archive),
     );
     const path = join(root, "archive.plist");
     await writeFile(path, bytes);
@@ -187,7 +188,7 @@ cliTest.for(["xml", "binary"] as const)(
           .replace("<real>0.25</real>", "<real>0.0</real>"),
       );
     } else {
-      bytes = Buffer.from(buildBinary(archive));
+      bytes = Buffer.from(buildBinaryKeyedArchive(archive));
       for (const [placeholder, zero] of [
         [1.5, -0],
         [0.25, 0],
@@ -265,7 +266,9 @@ cliTest(
       const path = join(root, format + ".plist");
       await writeFile(
         path,
-        Buffer.from(format === "xml" ? build(archive) : buildBinary(archive)),
+        Buffer.from(
+          format === "xml" ? build(archive) : buildBinaryKeyedArchive(archive),
+        ),
       );
       const output = await cli.run({
         arguments: ["inspect-keyed-archive", path, "--json"],

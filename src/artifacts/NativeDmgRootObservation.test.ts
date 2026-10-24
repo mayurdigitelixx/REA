@@ -18,17 +18,20 @@ it("retains authenticated carrier facts and unknown child coverage when native a
   const bytes = Buffer.alloc(1024);
   bytes.write("koly", bytes.length - 512, "ascii");
   await writeFile(path, bytes);
+  let attachArguments: readonly string[] | undefined;
   const host: NativeDmgHost = {
     run: async (args) => {
       if (args[0] === "verify") return { stdout: "", exitCode: 0 };
       if (args[0] === "info")
         return { stdout: build({ images: [] }), exitCode: 0 };
-      if (args[0] === "attach")
+      if (args[0] === "attach") {
+        attachArguments = [...args];
         return {
           stdout: "",
           stderr: "hdiutil: attach failed - Resource busy",
           exitCode: 1,
         };
+      }
       throw new Error(`Unexpected command ${String(args[0])}`);
     },
   };
@@ -43,6 +46,15 @@ it("retains authenticated carrier facts and unknown child coverage when native a
     failure = cause;
   }
   expect(failure).toBeDefined();
+  expect(attachArguments).toEqual([
+    "attach",
+    "-readonly",
+    "-nobrowse",
+    "-plist",
+    "-mountroot",
+    expect.any(String),
+    path,
+  ]);
   const projected = projectAnalysisError(
     translateArtifactFailure("inspect_artifact", failure),
   );
@@ -59,10 +71,17 @@ it("retains authenticated carrier facts and unknown child coverage when native a
           coverage: { status: "unknown" },
           occurrences: [{ logical_path: "." }],
           provenance: [
-            { arguments: ["verify", path], exit_code: 0 },
             {
-              arguments: expect.arrayContaining(["attach", path]),
+              tool: "/usr/bin/hdiutil",
+              arguments: ["verify", path],
+              exit_code: 0,
+              effects: ["read"],
+            },
+            {
+              tool: "/usr/bin/hdiutil",
+              arguments: attachArguments,
               exit_code: 1,
+              effects: ["read", "mount"],
             },
           ],
         },

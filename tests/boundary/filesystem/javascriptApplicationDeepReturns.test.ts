@@ -27,7 +27,10 @@ it("analyzes direct returns after deep source without exhausting the default pro
     process.execPath,
     ["--input-type=module", "-e", script],
     {
-      timeout: 10_000,
+      // The 20k-depth analysis takes about 1.3 s without CI worker contention.
+      // Stack safety is the contract; leave scheduler headroom within Vitest's
+      // 30 s case deadline while keeping a bounded child lifetime.
+      timeout: 25_000,
       // Bound the child heap while retaining Node's default stack size.
       env: {
         HOME: root,

@@ -11,6 +11,21 @@ import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
 const execute = promisify(execFile);
 
+const uncertainEndpoints = [
+  "/api/items",
+  "/assignment",
+  "/constructor",
+  "/escaped",
+  "/getter",
+  "/indirect",
+  "/late-link",
+  "/opaque",
+  "/prototype",
+  "/prototype-setter",
+  "/returned",
+  "/returned-write",
+];
+
 it("reports a candidate endpoint through the worker boundary in the public CLI", async () => {
   const root = await createTestTempDirectory("rea-endpoint-candidate-cli-");
   // Retain ambiguous requests while excluding type-erased collection/config reads.
@@ -51,6 +66,8 @@ it("reports a candidate endpoint through the worker boundary in the public CLI",
       'eval("Map.prototype.get = fetch"); new Map().get("/opaque");',
     "private.mjs":
       'const box = {}; box.prototype = Map.prototype; new Map().get("/private");',
+    "prototype-setter.mjs":
+      'const box = {}; box.__proto__ = { set p(value) { value.get = fetch; } }; box.p = Map.prototype; new Map().get("/prototype-setter");',
     "returned-write.mjs":
       'const prototype = (() => Map.prototype)(); prototype.get = fetch; new Map().get("/returned-write");',
     "prototype.mjs":
@@ -84,34 +101,8 @@ it("reports a candidate endpoint through the worker boundary in the public CLI",
         )
         .sort(),
     )
-    .toEqual([
-      "/api/items",
-      "/assignment",
-      "/constructor",
-      "/escaped",
-      "/getter",
-      "/indirect",
-      "/late-link",
-      "/network",
-      "/opaque",
-      "/prototype",
-      "/returned",
-      "/returned-write",
-      "session",
-    ]);
-  for (const value of [
-    "/api/items",
-    "/assignment",
-    "/constructor",
-    "/escaped",
-    "/getter",
-    "/indirect",
-    "/late-link",
-    "/opaque",
-    "/prototype",
-    "/returned",
-    "/returned-write",
-  ]) {
+    .toEqual([...uncertainEndpoints, "/network", "session"].sort());
+  for (const value of uncertainEndpoints) {
     const escaped = result.graph.nodes.find(
       ({ kind, observations }) =>
         kind === "endpoint" &&

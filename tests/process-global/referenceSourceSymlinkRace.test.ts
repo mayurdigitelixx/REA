@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import type { PathLike } from "node:fs";
 
@@ -192,28 +193,14 @@ it.skipIf(process.platform === "win32").each(["contents", "root"] as const)(
       "already observed source",
     );
     await expect(readFile(source)).rejects.toMatchObject({ code: "ENOENT" });
-    if (changed === "root") {
-      expect(imported).toMatchObject({
-        ok: false,
-        error: {
-          code: "io",
-          message: expect.stringContaining(
-            "Directory identity could not be verified: ENOENT",
-          ),
-          partial: {
-            entries: [{ status: "read", kind: "file", path: "source.txt" }],
-            bytesRead: Buffer.byteLength("already observed source"),
-          },
-        },
-      });
-      return;
-    }
     expect(imported.ok, JSON.stringify(imported)).toBe(true);
     if (!imported.ok) return;
     expect(imported.value.inventory_state).toBe("partial");
     expect(imported.value.limitations).toContainEqual(
       expect.stringContaining(
-        "Reference root enumeration is incomplete: Reference root changed",
+        changed === "root"
+          ? "Reference root enumeration is incomplete: Directory identity could not be verified: ENOENT"
+          : "Reference root enumeration is incomplete: Reference root changed",
       ),
     );
     expect(imported.value.entries).toEqual([
@@ -221,6 +208,10 @@ it.skipIf(process.platform === "win32").each(["contents", "root"] as const)(
         path: "source.txt",
         kind: "file",
         content_state: "hashed",
+        sha256: createHash("sha256")
+          .update("already observed source")
+          .digest("hex"),
+        size: Buffer.byteLength("already observed source"),
       }),
     ]);
   },

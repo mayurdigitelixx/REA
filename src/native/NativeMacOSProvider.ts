@@ -793,11 +793,8 @@ class NativeMacOSClient implements AnalysisClient {
     );
     if (entitlementsFailure !== null) return err(entitlementsFailure);
     // codesign echoes the resolved executable path in its diagnostics.
-    const parsed = parseCodeSignature(
-      display.value.stderr,
-      unsigned,
-      executablePaths,
-    );
+    const { signature: parsed, architectures: reportedArchitectures } =
+      parseCodeSignature(display.value.stderr, unsigned, executablePaths);
     // The requirement is printed to stdout; stderr echoes the path.
     const requirementText =
       /designated\s*=>\s*(.+)$/mu.exec(requirements.value.stdout)?.[1] ?? null;
@@ -814,7 +811,13 @@ class NativeMacOSClient implements AnalysisClient {
             `Entitlements: ${omittedPrototypeKeysLimitation(entitlementValue.omittedPrototypeKeys)}`,
           ]),
     ];
-    const architectures = codeSignArchitectures(parsed.format, this.target);
+    const architectures =
+      reportedArchitectures ??
+      (this.target.kind === "executable"
+        ? this.target.availableArchitectures.map((architecture) =>
+            architecture === "x86" ? "i386" : architecture,
+          )
+        : []);
     if (architectures.length > 1)
       limitations.push(
         `Partial signature coverage: signature identity, hashes, designated requirement, entitlements and runtime state describe the requested ${selectedArchitecture} architecture; other slices' metadata is not returned.`,
@@ -854,7 +857,7 @@ class NativeMacOSClient implements AnalysisClient {
     if (architectures.length > 1) {
       const slices = await this.#inspectSignatureSliceStates(
         binding,
-        parsed.format,
+        architectures,
         executablePaths,
         { captures, limitations },
         signal,
@@ -875,7 +878,7 @@ class NativeMacOSClient implements AnalysisClient {
 
   async #inspectSignatureSliceStates(
     binding: SignatureTargetBinding,
-    format: string | null,
+    architectures: readonly string[],
     executablePaths: readonly string[],
     observation: { captures: NativeCommandCapture[]; limitations: string[] },
     signal: AbortSignal | undefined,
@@ -884,7 +887,7 @@ class NativeMacOSClient implements AnalysisClient {
     const { captures, limitations } = observation;
     const unsigned: string[] = [];
     let unsignedNote: number | undefined;
-    for (const architecture of codeSignArchitectures(format, this.target)) {
+    for (const architecture of architectures) {
       const slice = await this.#captureSignature(
         binding,
         ["-d", "-a", architecture, "--verbose=4"],
@@ -1412,26 +1415,6 @@ const codeSignCaptureFailure = (
   isNonzeroUnsignedObservation(capture, snapshotPath, executablePaths)
     ? null
     : translateCodeSignExitFailure(capture);
-
-const codeSignArchitectures = (
-  format: string | null,
-  target: BinaryTarget,
-): string[] => {
-  const universal = /^Mach-O universal \(([^)\r\n]+)\)$/u.exec(
-    format ?? "",
-  )?.[1];
-  if (universal !== undefined) {
-    const architectures = universal
-      .split(/\s+/u)
-      .filter((architecture) => /^[A-Za-z][A-Za-z0-9_.]*$/u.test(architecture));
-    if (architectures.length > 0) return [...new Set(architectures)];
-  }
-  if (format?.startsWith("Mach-O thin ") === true) return [];
-  if (target.kind !== "executable" || !isMachOFormat(target.format)) return [];
-  return target.availableArchitectures.map((architecture) =>
-    architecture === "x86" ? "i386" : architecture,
-  );
-};
 
 const invocation = (
   capture: NativeCommandCapture,

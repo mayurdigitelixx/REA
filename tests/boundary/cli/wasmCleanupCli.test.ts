@@ -137,6 +137,11 @@ cliTest.runIf(canDenyCleanup)(
           },
         },
       });
+      expect(primaryAndCleanupFail.details).toMatchObject({
+        partial_observation: {
+          normalized_result: { validation: "rejected-by-selected-profile" },
+        },
+      });
       expect(JSON.stringify(primaryAndCleanupFail.details)).toContain(
         "fixture validation rejected",
       );

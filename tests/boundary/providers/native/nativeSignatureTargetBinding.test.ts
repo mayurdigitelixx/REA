@@ -54,12 +54,18 @@ class Captures extends NativeFixtureRunner {
   calls = 0;
   constructor(
     private readonly onCapture?: (args: readonly string[]) => Promise<void>,
+    private readonly displayOutput?: string,
   ) {
     super();
   }
   override async run(tool: string, args: readonly string[]) {
     this.calls += 1;
     await this.onCapture?.(args);
+    if (this.displayOutput !== undefined && args.includes("--verbose=4"))
+      return new NativeFixtureRunner({ codesign: this.displayOutput }).run(
+        tool,
+        args,
+      );
     return super.run(tool, args);
   }
 }
@@ -82,17 +88,21 @@ const registerSignatureObservationCases = () => {
       target.architecture,
       target.architecture,
       target.architecture,
-      ...target.availableArchitectures,
     ]);
     expect(result.value.result).toMatchObject({
       signed: true,
       identifier: "com.example.fixture",
+      format: "app bundle with Mach-O thin (arm64)",
       designated_requirement: "identifier com.example.fixture",
       limitations: expect.arrayContaining([
         "Inspected a digest-verified Mach-O byte snapshot; filesystem-bound signing context and trust validation are not examined.",
-        expect.stringContaining("Partial signature coverage:"),
       ]),
     });
+    expect(
+      inspectSignatureSchema.parse(result.value.result).limitations,
+    ).not.toContainEqual(
+      expect.stringContaining("Partial signature coverage:"),
+    );
   });
 
   it("projects typed plist scalars from a controlled entitlement response", async () => {
@@ -298,6 +308,10 @@ it.each([
             ).run(tool, args);
           return err(new NativeCommandFailure(tool, "nonzero-exit", 1));
         }
+        if (stage === "slice" && display && !slice)
+          return new NativeFixtureRunner({
+            codesign: "Format=Mach-O universal (arm64 x86_64)\n",
+          }).run(tool, args);
         if (stage === "slice" && args.includes("-r-"))
           return unsigned.run(tool, args, {});
         return replay.run(tool, args);
@@ -698,7 +712,10 @@ for (const cleanupFails of [false, true])
     let attempts = 0;
     const client = new NativeMacOSProvider(
       {},
-      new Captures(),
+      new Captures(
+        undefined,
+        "Identifier=com.example.fixture\nFormat=Mach-O universal (arm64 x86_64)\n",
+      ),
       "darwin",
       undefined,
       async () => {
@@ -732,6 +749,9 @@ for (const cleanupFails of [false, true])
     const facts = inspectSignatureSchema.parse(result.error.partialObservation);
     expect(facts.signed).toBe(true);
     expect(facts.provenance).toHaveLength(5);
+    expect(
+      facts.provenance.map(({ command }) => command[command.indexOf("-a") + 1]),
+    ).toEqual(["arm64", "arm64", "arm64", "arm64", "x86_64"]);
     expect(
       projectAnalysisError(result.error).details?.partial_observation,
     ).toEqual(facts);

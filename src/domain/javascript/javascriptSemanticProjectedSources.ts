@@ -18,6 +18,8 @@ import {
   semanticBindingAtRead,
   semanticDefiniteEffectPrecedesReference,
   semanticEffectTiming,
+  semanticEffectTimingAtStore,
+  type SemanticBeforeStore,
   semanticTopLevelEffectFollowsCapture,
 } from "./javascriptSemanticMutationInitializers.js";
 import {
@@ -174,12 +176,10 @@ export const semanticProjectedSourceEligibilityAtRead = (
     false,
     memberReadAt,
     capturedSelections,
-    true,
+    { retainEligibility: true },
   )?.sources;
 
 /** Keep imported origins subject to the same selected writes as other values. */
-// Projection alternatives are introduced by callers. An ordinary property path
-// remains ordinary while the owner selects stored and copied source prefixes.
 export function semanticProjectedSourceFactsAtRead(
   binding: JavaScriptSemanticBindingState,
   reference: t.Node,
@@ -188,7 +188,10 @@ export function semanticProjectedSourceFactsAtRead(
   includeUnknown: boolean,
   memberReadAt?: t.Node,
   capturedSelections?: readonly SemanticCapturedSelection[],
-  retainEligibility?: boolean,
+  context?: {
+    readonly retainEligibility?: boolean;
+    readonly beforeStore?: SemanticBeforeStore | undefined;
+  },
 ):
   | {
       readonly sources: readonly (Omit<ProjectedSource, "path"> & {
@@ -198,6 +201,8 @@ export function semanticProjectedSourceFactsAtRead(
         readonly path: JavaScriptSemanticPropertyPath;
       })[];
       readonly retainsOrigin: boolean;
+      readonly slotMayHaveChanged: boolean;
+      readonly hasDescendantEffects: boolean;
     }
   | undefined;
 export function semanticProjectedSourceFactsAtRead(
@@ -217,14 +222,21 @@ const projectedSourceFactsAtRead = (
   includeUnknown: boolean,
   memberReadAt: t.Node = reference,
   capturedSelections: readonly SemanticCapturedSelection[] = [],
-  retainEligibility = false,
+  context: {
+    readonly retainEligibility?: boolean;
+    readonly beforeStore?: SemanticBeforeStore | undefined;
+  } = {},
 ):
   | {
       readonly sources: readonly ProjectedSource[];
       readonly storedSources: readonly ProjectedSource[];
       readonly retainsOrigin: boolean;
+      /** Effects on this selected slot, excluding writes that only select its receiver. */
+      readonly slotMayHaveChanged: boolean;
+      readonly hasDescendantEffects: boolean;
     }
   | undefined => {
+  const { retainEligibility = false, beforeStore } = context;
   const read = semanticBindingAtRead(binding, reference, state.parentsByNode);
   const captured = [
     ...read.binding.initializers,
@@ -298,6 +310,7 @@ const projectedSourceFactsAtRead = (
     });
   const matches = (
     effect: JavaScriptSemanticBindingState["memberWrites"][number],
+    includeDescendants = false,
   ) =>
     (effect.receiverInitializers === undefined ||
       effect.receiverInitializers.length === 0 ||
@@ -311,8 +324,9 @@ const projectedSourceFactsAtRead = (
         ),
       )) &&
     path.length > 0 &&
-    effect.path.length <= path.length &&
+    (includeDescendants || effect.path.length <= path.length) &&
     effect.path.every((key, index) => {
+      if (index >= path.length) return includeDescendants;
       const selected = path[index];
       return (
         selected !== undefined &&
@@ -324,10 +338,12 @@ const projectedSourceFactsAtRead = (
         )
       );
     }) &&
-    semanticEffectTiming(selectedAt(effect.path.length), effect.node, state) !==
-      "after" &&
+    (beforeStore === undefined ||
+    captureForDepth(effect.path.length) !== undefined
+      ? semanticEffectTiming(selectedAt(effect.path.length), effect.node, state)
+      : semanticEffectTimingAtStore(beforeStore, effect, state)) !== "after" &&
     !targetsReplacedPrefix(effect);
-  const writes = binding.memberWrites.filter(matches);
+  const writes = binding.memberWrites.filter((effect) => matches(effect));
   let replacement:
     | JavaScriptSemanticBindingState["memberWrites"][number]
     | undefined;
@@ -377,6 +393,18 @@ const projectedSourceFactsAtRead = (
     )
   )
     return undefined;
+  const descendantAffectsSelection = (
+    effect: JavaScriptSemanticBindingState["memberWrites"][number],
+  ): boolean =>
+    effect.path.length > path.length &&
+    matches(effect, true) &&
+    !superseded(effect);
+  const hasDescendantEffects =
+    binding.memberWrites.some(descendantAffectsSelection) ||
+    binding.escapedPaths.some(descendantAffectsSelection);
+  const slotMayHaveChanged = writes.some(
+    (effect) => !superseded(effect) && effect.path.length === path.length,
+  );
   const sources: ProjectedSource[] = [];
   const sourceKeys = new WeakMap<t.Node, Set<string>>();
   const captureIds = new WeakMap<t.Node, number>();
@@ -447,7 +475,13 @@ const projectedSourceFactsAtRead = (
   }
   const storedSources = [...sources];
   if (!retainEligibility && replacement !== undefined)
-    return { sources, storedSources, retainsOrigin: false };
+    return {
+      sources,
+      storedSources,
+      retainsOrigin: false,
+      slotMayHaveChanged,
+      hasDescendantEffects,
+    };
   for (const initializer of read.binding.initializers) {
     if (semanticReferenceIterationUnknown(initializer, state)) return undefined;
     if (semanticReferenceSourcesInactive(initializer, state)) continue;
@@ -487,5 +521,11 @@ const projectedSourceFactsAtRead = (
         });
     }
   }
-  return { sources, storedSources, retainsOrigin: true };
+  return {
+    sources,
+    storedSources,
+    retainsOrigin: true,
+    slotMayHaveChanged,
+    hasDescendantEffects,
+  };
 };

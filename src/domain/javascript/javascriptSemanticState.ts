@@ -9,11 +9,13 @@ import {
 import {
   semanticBindingAtRead,
   semanticEffectTiming,
+  type SemanticBeforeStore,
 } from "./javascriptSemanticMutationInitializers.js";
 
-import type {
-  JavaScriptSemanticPropertyPath,
-  SemanticPropertyPathCoverage,
+import {
+  semanticPropertyPathKeyMatches,
+  type JavaScriptSemanticPropertyPath,
+  type SemanticPropertyPathCoverage,
 } from "./javascriptSemanticPropertyPaths.js";
 
 import type {
@@ -57,6 +59,8 @@ interface JavaScriptSemanticReferenceInitializer extends JavaScriptSemanticIniti
 export interface JavaScriptSemanticMemberEffect {
   readonly path: JavaScriptSemanticPropertyPath;
   readonly node: t.Node | undefined;
+  /** Direct ambient store leaf, preserving sibling order within one mutation. */
+  readonly storeTarget?: t.MemberExpression | t.OptionalMemberExpression;
   /** Selected RHS values retained by the shared pattern-store owner. */
   readonly assignedSources?: readonly SemanticIterationSource[];
   /** Binding values whose receiver identities were selected for this effect. */
@@ -173,10 +177,44 @@ export interface JavaScriptSemanticAnalysisState {
   readonly ambientWrites: SemanticPropertyPathCoverage;
   /** Browser receivers proven to be only the ambient global identity. */
   readonly retainedGlobalCallReceivers: WeakSet<t.Node>;
+  /** Ambient identity owner selects actual prototype chains at this captured store. */
+  ambientStorePrototypeFacts?:
+    | ((store: SemanticBeforeStore) =>
+        | {
+            readonly prototypePaths: readonly (readonly (string | null)[])[];
+            readonly unknownAncestors: boolean;
+            readonly directNullPrototype: boolean;
+            readonly localPrototypes: readonly t.Node[];
+          }
+        | undefined)
+    | undefined;
+  /** Getter invocation effects while copying an object's enumerable own slots. */
+  objectCopyMayInvalidateOwnDescriptors?:
+    | ((source: t.ObjectExpression) => boolean)
+    | undefined;
+  /** Ordinary local identity selected at the target argument's own read site. */
+  ordinaryLocalIdentityAt?: ((node: t.Node) => boolean) | undefined;
+  /** Captured allocation's prototype mutations invalidate inherited member identity. */
+  inheritedMemberIdentityMayHaveChangedAt?:
+    | ((root: t.Node, read: t.Node) => boolean)
+    | undefined;
+  /** Parsed native construction, including whether descriptors can add own accessors. */
+  nativeObjectCreationAt?:
+    | ((
+        node: t.Node,
+      ) =>
+        | { readonly prototype: t.Node; readonly ownPropertiesEmpty: boolean }
+        | undefined)
+    | undefined;
   /** Store targets whose ownership is unknown or ambient, as classified by ambient indexing. */
   readonly escapingReferenceStores: WeakSet<t.MemberExpression>;
   /** Ambient object identities passed to calls whose effects are not evaluated. */
   readonly ambientEscapes: SemanticPropertyPathCoverage;
+  /** Ambient owner proved these native calls keep their namespace/browser receiver. */
+  readonly intrinsicReceiverCalls: WeakMap<
+    t.Node,
+    { readonly path: readonly string[]; readonly readAt: t.Node }
+  >;
   /** Capture sites keep later opaque effects from changing earlier copies. */
   readonly ambientEscapeEffects: JavaScriptSemanticMemberEffect[];
   /** Source sites distinguish replacement before an ambient identity capture from later writes. */
@@ -635,4 +673,47 @@ export const commonJsWrapperBindingDeclaration = (
     binding.declarationKinds.size > 0
     ? binding
     : undefined;
+};
+
+export const SEMANTIC_GLOBAL_OBJECT_NAMES: readonly string[] = [
+  "globalThis",
+  "global",
+  "window",
+  "self",
+];
+
+/** Global self fields select the same object identity, not another property depth. */
+export const canonicalSemanticAmbientPath = (
+  path: readonly (string | null)[],
+): readonly (string | null)[] => {
+  if (path[0] !== "global") return path;
+  let first = 1;
+  while (SEMANTIC_GLOBAL_OBJECT_NAMES.includes(path[first] ?? "")) first += 1;
+  return first === 1 ? path : ["global", ...path.slice(first)];
+};
+
+/** Query current ambient effects at their captured read; no cached validity bit. */
+export const semanticAmbientPathMayHaveChanged = (
+  state: JavaScriptSemanticAnalysisState,
+  read: t.Node,
+  path: readonly (string | null)[],
+): boolean => {
+  const selected = canonicalSemanticAmbientPath(path);
+  if (
+    !state.ambientWrites.covers(selected) &&
+    !state.ambientEscapes.covers(selected)
+  )
+    return false;
+  const affects = (
+    effect: JavaScriptSemanticAnalysisState["ambientWriteEffects"][number],
+  ) =>
+    semanticEffectTiming(read, effect.node, state) !== "after" &&
+    effect.path.length <= selected.length &&
+    effect.path.every((key, index) =>
+      semanticPropertyPathKeyMatches(key, selected[index] ?? ""),
+    );
+  return (
+    state.ambientWriteEffects.some(affects) ||
+    state.ambientEscapeEffects.some(affects)
+  );
 };

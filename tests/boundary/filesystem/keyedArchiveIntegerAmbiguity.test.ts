@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { build, buildBinary, parseBinary } from "plist";
+import { build, parseBinary } from "plist";
 import { expect, it } from "vitest";
 import { inspectBundleKeyedArchive } from "../../../src/artifacts/apple/KeyedArchiveReader.js";
 import { keyedArchiveResultSchema } from "../../../src/domain/apple/keyedArchive.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
+import { buildBinaryKeyedArchive } from "../../fixtures/binaryKeyedArchive.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { cliTest } from "../../support/cli/cliFixture.js";
 
@@ -36,7 +37,7 @@ const fixture = async (scenario: (typeof scenarios)[number]) => {
   let bytes: Buffer;
   if (scenario === "supplemental-binary-table") {
     bytes = Buffer.from(
-      buildBinary({
+      buildBinaryKeyedArchive({
         ...source,
         $top: { root: { UID: 1 } },
         $objects: ["$null", { real: 9007199254740992 }],

@@ -1,8 +1,9 @@
+import { buildBinaryKeyedArchive } from "../../fixtures/binaryKeyedArchive.js";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { build, buildBinary } from "plist";
+import { build } from "plist";
 import { expect } from "vitest";
 
 import { interfaceBuilderAnalysisSchema } from "../../../src/domain/apple/interfaceBuilderGraph.js";
@@ -70,7 +71,7 @@ cliTest.for(scenarios)(
     };
     let bytes =
       scenario === "binary"
-        ? Buffer.from(buildBinary(source))
+        ? Buffer.from(buildBinaryKeyedArchive(source))
         : Buffer.from(
             build(source)
               .replace(

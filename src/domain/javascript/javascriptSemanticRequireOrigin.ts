@@ -699,6 +699,8 @@ const loaderInvocationInterop = (state: JavaScriptSemanticAnalysisState) => {
 };
 
 export interface JavaScriptRequireCallFact {
+  /** Native resolver identity is captured when this member is read, before arguments. */
+  readonly resolverReadSite?: t.MemberExpression | t.OptionalMemberExpression;
   readonly operation: "load" | "resolve";
   readonly loader: JavaScriptRequireLoaderFact;
   readonly arguments:
@@ -741,12 +743,15 @@ export const semanticRequireCallAt = (
     (t.isMemberExpression(callee) || t.isOptionalMemberExpression(callee)) &&
     semanticStaticPropertyKey(callee.property, callee.computed) === "resolve"
   ) {
-    const loader = requireLoaderValueAt(
+    const selected = selectedRequireSourcesAt(
       callee.object,
-      node,
+      callee,
       state,
       factoryBindingIds,
     );
+    const loader =
+      selected?.loader ??
+      requireLoaderValueAt(callee.object, callee, state, factoryBindingIds);
     if (loader === "unknown")
       return {
         operation: "load",
@@ -757,15 +762,10 @@ export const semanticRequireCallAt = (
     // Bundler factory loaders can share the `require` shape, but their
     // `.resolve` member is not Node's module resolver.
     if (loader === "commonjs-loader" || loader === "create-require") {
-      const selected = selectedRequireSourcesAt(
-        callee.object,
-        node,
-        state,
-        factoryBindingIds,
-      );
       return {
+        resolverReadSite: callee,
         operation: "resolve",
-        loader: selected?.loader ?? loader,
+        loader,
         arguments: node.arguments,
         sourceRelative:
           selected?.sourceRelative ?? loader === "commonjs-loader",

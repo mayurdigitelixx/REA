@@ -15,7 +15,10 @@ export const parseCodeSignature = (
   output: string,
   unsigned: boolean,
   executablePaths: readonly string[] = [],
-): Omit<InspectSignature, "provenance"> => {
+): {
+  readonly signature: Omit<InspectSignature, "provenance">;
+  readonly architectures: readonly string[] | null;
+} => {
   const { identifier, fields } = splitEchoedValues(output, executablePaths);
   const values = new Map<string, string>();
   const authorities: string[] = [];
@@ -47,7 +50,29 @@ export const parseCodeSignature = (
     hardened_runtime: parseRuntime(values.get("CodeDirectory")),
     limitations: unsigned ? ["Artifact is not signed."] : [],
   });
-  return parsed;
+  return {
+    signature: parsed,
+    architectures: formatArchitectures(parsed.format),
+  };
+};
+
+/** Format is parsed here once; container prefixes remain part of its display text. */
+const formatArchitectures = (
+  format: string | null,
+): readonly string[] | null => {
+  const match =
+    /^(?:app bundle with )?Mach-O (thin|universal) \(([^)\r\n]+)\)$/u.exec(
+      format ?? "",
+    );
+  if (match === null) return null;
+  const names = match[2]!.split(/\s+/u).filter(Boolean);
+  if (
+    names.length === 0 ||
+    names.some((name) => !/^[A-Za-z][A-Za-z0-9_.]*$/u.test(name)) ||
+    (match[1] === "thin" && names.length !== 1)
+  )
+    return null;
+  return [...new Set(names)];
 };
 
 /**

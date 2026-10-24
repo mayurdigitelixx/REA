@@ -160,7 +160,11 @@ for (const scenario of cases)
           expect.objectContaining({
             name: scenario.client,
             status: "failed",
-            detail: expect.stringContaining(scenario.diagnostic),
+            detail: expect.stringContaining(
+              scenario.client === "dsh"
+                ? "Invalid or unsupported Cordis YAML"
+                : scenario.diagnostic,
+            ),
           }),
         ]),
       });

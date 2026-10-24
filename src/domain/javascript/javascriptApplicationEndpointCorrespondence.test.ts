@@ -5,7 +5,10 @@ import {
   completeCoverage,
   fixtureNode,
 } from "./javascriptApplicationGraph.fixture.js";
-import { createJavaScriptApplicationGraph } from "./javascriptApplicationGraph.js";
+import {
+  createJavaScriptApplicationNode,
+  createJavaScriptApplicationGraph,
+} from "./javascriptApplicationGraph.js";
 import { compareJavaScriptApplicationVersions } from "./javascriptApplicationVersionComparison.js";
 import type { ApplicationNode } from "./javascriptApplicationGraphSchemas.js";
 
@@ -77,7 +80,19 @@ const compare = (left: ApplicationNode, right: ApplicationNode) => {
     createJavaScriptApplicationGraph({
       schema: "JavaScriptApplicationGraph",
       root_node_ids: [node.node_id],
-      nodes: [node],
+      nodes: [
+        createJavaScriptApplicationNode({
+          kind: node.kind,
+          identity: node.identity,
+          observations: node.observations.map(
+            ({
+              observation_id: _id,
+              identifier_strategy: _strategy,
+              ...observation
+            }) => observation,
+          ),
+        }),
+      ],
       edges: [],
       coverage: completeCoverage,
       limitations: [],

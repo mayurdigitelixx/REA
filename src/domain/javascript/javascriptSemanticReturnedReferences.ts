@@ -164,8 +164,16 @@ export const createSemanticReturnedReferences = (
     const sourceGenericInvocation =
       invocation !== undefined &&
       javaScriptGenericInvocationMethod(invocation.callee) !== undefined;
-    const inheritedInvocationChanged = (method: "call" | "apply"): boolean => {
+    const inheritedInvocationChanged = (
+      method: "call" | "apply",
+      callable: t.Function,
+      read: t.Node,
+    ): boolean => {
       if (invocation === undefined) return false;
+      if (
+        state.inheritedMemberIdentityMayHaveChangedAt?.(callable, read) === true
+      )
+        return true;
       const inheritedPath = ["global", "Function", "prototype", method];
       return state.ambientWriteEffects.some(
         (effect) =>
@@ -443,14 +451,17 @@ export const createSemanticReturnedReferences = (
           ...current,
           node: receiver,
           readAt: current.readAt ?? node,
-          ...(current.capturedSelections === undefined
-            ? {}
-            : {
-                capturedSelections: semanticShiftCapturedSelections(
-                  current.capturedSelections,
-                  path.length,
-                ),
-              }),
+          capturedSelections: semanticNormalizeCapturedSelections([
+            ...(semanticShiftCapturedSelections(
+              current.capturedSelections,
+              path.length,
+            ) ?? []),
+            // An initializer can capture a member value while a later alias
+            // lookup merely captures its receiver. Keep that member's own read.
+            ...(current.readAt !== undefined && current.readAt !== node
+              ? [{ at: node, depth: path.length }]
+              : []),
+          ]),
           path:
             current.path === undefined
               ? undefined
@@ -506,7 +517,18 @@ export const createSemanticReturnedReferences = (
               });
             else if (current.invocation.receiverUnknown)
               result.unresolvedInvocation = true;
-            if (inheritedInvocationChanged(method))
+            if (
+              inheritedInvocationChanged(
+                method,
+                node,
+                current.capturedSelections?.find(
+                  (capture) => capture.depth >= 1,
+                )?.at ??
+                  current.readAt ??
+                  invocation?.callee ??
+                  node,
+              )
+            )
               result.unresolvedInvocation = true;
           }
         }

@@ -10,7 +10,7 @@ import {
   cancelled,
   entryFailure,
   failure,
-  filesystemFailureDetail,
+  filesystemFailureFacts,
   safeSize,
   type FilesystemFailureDetail,
 } from "./ReferenceSourceReaderErrors.js";
@@ -230,8 +230,9 @@ const scheduleObservedDirectories = (
 };
 
 const directoryReadFailure = (cause: unknown): FilesystemFailureDetail => {
-  const detail = filesystemFailureDetail(cause, "Directory could not be read");
-  if (detail === undefined) throw cause;
+  const facts = filesystemFailureFacts(cause, "Directory could not be read");
+  if (facts === undefined) throw cause;
+  const { detail } = facts;
   return detail;
 };
 
@@ -244,11 +245,12 @@ const readMetadata = async (
   try {
     return { ok: true, value: await bigLstat(path) };
   } catch (cause: unknown) {
-    const detail = filesystemFailureDetail(
+    const facts = filesystemFailureFacts(
       cause,
       "Entry metadata could not be read",
     );
-    if (detail === undefined) throw cause;
+    if (facts === undefined) throw cause;
+    const { detail } = facts;
     return { ok: false, ...detail };
   }
 };
@@ -392,14 +394,14 @@ export const readStableSymlinkTarget = async (
     return observed;
   } catch (cause: unknown) {
     if (isAborted(signal)) return cancelledSymlink(path);
-    const code =
-      cause instanceof Error ? Reflect.get(cause, "code") : undefined;
-    if (code === "ENOENT" || code === "ENOTDIR") return changedSymlink(path);
-    const detail = filesystemFailureDetail(
+    const facts = filesystemFailureFacts(
       cause,
       "Symbolic link target could not be read safely",
     );
-    if (detail === undefined) throw cause;
+    if (facts === undefined) throw cause;
+    const { detail } = facts;
+    if (facts.systemCode === "ENOENT" || facts.systemCode === "ENOTDIR")
+      return changedSymlink(path);
     return entryFailure(
       path,
       "symlink",

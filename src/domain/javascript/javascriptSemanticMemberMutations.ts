@@ -3,6 +3,9 @@ import { semanticKnownSymbolKey } from "./javascriptSemanticPropertyKeys.js";
 import {
   createAmbientPathResolver,
   retainSemanticAmbientEffect,
+  semanticIntrinsicReceiverIsSafe,
+  semanticNativeMutationTargetIsSafe,
+  semanticStoreMayReachAmbientSetter,
 } from "./javascriptSemanticAmbientWrites.js";
 import { isIntrinsicMapLookup } from "./javascriptSemanticMapOperations.js";
 import {
@@ -37,6 +40,7 @@ import {
   semanticProjectedSourceFactsAtRead,
   semanticShiftCapturedSelections,
   semanticNormalizeCapturedSelections,
+  semanticCapturedSelectionsAfterPropertyRead,
   type SemanticCapturedSelection,
 } from "./javascriptSemanticProjectedSources.js";
 
@@ -46,7 +50,9 @@ import {
   semanticClassPropertyReferences,
   semanticClassAccessorReferences,
   semanticObjectPropertyReferences,
-  semanticObjectAccessorReferences,
+  semanticObjectAccessorSelection,
+  semanticArrayOwnDescriptorPresence,
+  type JavaScriptOwnDescriptorPresence,
   type JavaScriptSemanticObjectReference,
 } from "./javascriptSemanticObjectReferences.js";
 import {
@@ -55,6 +61,7 @@ import {
   type SemanticIterationSource,
   type SemanticPropertyReadSource,
 } from "./javascriptSemanticIterationSources.js";
+import { semanticAliasSelectionChoices } from "./javascriptSemanticAliasSelections.js";
 import { semanticGetterReceiverReferences } from "./javascriptSemanticGetterResults.js";
 import { semanticCallableResultExpressions } from "./javascriptSemanticCallableResults.js";
 import { createSemanticReturnedReferences } from "./javascriptSemanticReturnedReferences.js";
@@ -62,8 +69,12 @@ import {
   semanticMutationInitializers,
   semanticBindingAtRead,
   semanticScopeExitEffect,
+  type SemanticBeforeStore,
 } from "./javascriptSemanticMutationInitializers.js";
-import { semanticCoercionOperands } from "./javascriptSemanticLanguageInvocations.js";
+import {
+  semanticCoercionOperands,
+  semanticIntegerIndexedStoreSource,
+} from "./javascriptSemanticLanguageInvocations.js";
 import { SEMANTIC_ALIAS_SELECTION_LIMIT } from "./javascriptSemanticResourceLimits.js";
 import {
   semanticCopiedReferencePath,
@@ -93,6 +104,7 @@ import {
 
 type PropertyPath = JavaScriptSemanticPropertyPath;
 interface MutationSelectionContext {
+  readonly projectAmbientPaths?: boolean;
   readonly memberReadAt?: t.Node | undefined;
   readonly capturedSelections?:
     | readonly SemanticCapturedSelection[]
@@ -126,21 +138,45 @@ const localAccessorMethods = (
   path: PropertyPath,
   accessor: "get" | "set",
   state: JavaScriptSemanticAnalysisState,
-  keyMayExist: (
-    key: PropertyPath[number] | undefined,
-    kind: "get" | "set",
-  ) => boolean,
-  lookup: "prototype" | "own" = "prototype",
+  selection: {
+    readonly keyMayExist: (
+      key: PropertyPath[number] | undefined,
+      kind: "get" | "set",
+    ) => boolean;
+    readonly requireLocalProof?: boolean;
+    readonly beforeStore?: SemanticBeforeStore;
+    readonly lookup?: "prototype" | "own";
+    readonly ownDescriptors?: JavaScriptOwnDescriptorPresence[];
+  },
 ): readonly (t.ObjectMethod | t.ClassMethod)[] | undefined => {
-  if (!keyMayExist(path.at(-1), accessor)) return [];
+  if (!selection.keyMayExist(path.at(-1), accessor)) return [];
   const methods = new Set<t.ObjectMethod | t.ClassMethod>();
-  const pending = [{ node: root, path }];
+  const storePrototypeFacts =
+    selection.beforeStore === undefined
+      ? undefined
+      : state.ambientStorePrototypeFacts?.(selection.beforeStore);
+  const lookup =
+    storePrototypeFacts !== undefined
+      ? "own"
+      : (selection.lookup ?? "prototype");
+  const pending: (ReferencedValue & {
+    readonly capturedSelections?:
+      | readonly SemanticCapturedSelection[]
+      | undefined;
+  })[] = [{ node: root, path }];
   const examined = new WeakMap<t.Node, Set<string>>();
   let selections = 0;
   for (let cursor = 0; cursor < pending.length; cursor++) {
     const current = pending[cursor]!;
     const node = unwrapJavaScriptExpression(current.node).node;
-    const key = JSON.stringify(current.path);
+    const key = JSON.stringify([
+      current.path,
+      current.capturedSelections?.map(({ depth, at }) => [
+        depth,
+        at.start,
+        at.end,
+      ]),
+    ]);
     const paths = examined.get(node) ?? new Set<string>();
     if (paths.has(key)) continue;
     paths.add(key);
@@ -158,12 +194,86 @@ const localAccessorMethods = (
     }
     if (t.isIdentifier(node)) {
       const binding = resolveSemanticBindingState(state, node, node.name);
-      if (binding === undefined) continue;
+      if (binding === undefined) {
+        if (selection.requireLocalProof) return undefined;
+        continue;
+      }
+      if (selection.requireLocalProof && current.path.length > 0) {
+        const receiverPath = current.path.slice(0, -1);
+        for (const { path, includeDescendants } of [
+          { path: current.path, includeDescendants: false },
+          ...(storePrototypeFacts !== undefined
+            ? []
+            : [
+                {
+                  path: [...receiverPath, "__proto__"],
+                  includeDescendants: true,
+                },
+              ]),
+        ]) {
+          const facts = semanticProjectedSourceFactsAtRead(
+            binding,
+            node,
+            path,
+            state,
+            true,
+            selection.beforeStore?.mutation ?? root,
+            current.capturedSelections,
+            { beforeStore: selection.beforeStore },
+          );
+          if (
+            facts === undefined ||
+            facts.slotMayHaveChanged ||
+            (includeDescendants && facts.hasDescendantEffects)
+          )
+            return undefined;
+        }
+        const receiver = semanticProjectedSourceFactsAtRead(
+          binding,
+          node,
+          receiverPath,
+          state,
+          true,
+          root,
+          current.capturedSelections,
+        );
+        if (receiver === undefined || receiver.sources.length === 0)
+          return undefined;
+        for (const source of receiver.sources) {
+          const exactPath: PropertyPath[number][] = [];
+          for (const key of source.path) {
+            const choices = semanticAliasSelectionChoices(key);
+            if (choices.length !== 1) return undefined;
+            exactPath.push(choices[0]!);
+          }
+          pending.push({
+            node: source.node,
+            path: [...exactPath, current.path.at(-1)!],
+            capturedSelections: semanticNormalizeCapturedSelections([
+              ...(semanticShiftCapturedSelections(
+                current.capturedSelections,
+                exactPath.length - receiverPath.length,
+              ) ?? []),
+              ...(exactPath.length === 0
+                ? []
+                : [{ at: source.node, depth: exactPath.length }]),
+              ...(source.capturedSelections ?? []),
+            ]),
+          });
+        }
+        continue;
+      }
       const selected = semanticBindingAtRead(
         binding,
         node,
         state.parentsByNode,
       ).binding;
+      if (
+        selection.requireLocalProof &&
+        selected.initializers.length + selected.referenceInitializers.length ===
+          0
+      )
+        return undefined;
       for (const source of [
         ...selected.initializers,
         ...selected.referenceInitializers,
@@ -182,33 +292,81 @@ const localAccessorMethods = (
           semanticStaticPropertyKey(node.property, node.computed),
           ...current.path,
         ],
+        capturedSelections: semanticNormalizeCapturedSelections([
+          ...(semanticShiftCapturedSelections(current.capturedSelections, 1) ??
+            []),
+          { at: node, depth: 1 },
+        ]),
       });
     } else if (
       current.path.length > 0 &&
       (t.isObjectExpression(node) || t.isArrayExpression(node))
     ) {
       const [selected, ...remaining] = current.path;
-      const references = t.isArrayExpression(node)
-        ? semanticArrayPropertyReferences(node, [selected!])
-        : remaining.length === 0
-          ? semanticObjectAccessorReferences(
+      const descriptor =
+        remaining.length === 0 && t.isObjectExpression(node)
+          ? semanticObjectAccessorSelection(
               node,
               selected!,
               state,
               accessor,
               lookup,
             )
-          : semanticObjectPropertyReferences(node, [selected!], state);
+          : undefined;
+      if (remaining.length === 0)
+        selection.ownDescriptors?.push(
+          t.isArrayExpression(node)
+            ? semanticArrayOwnDescriptorPresence(node, selected!)
+            : descriptor!.ownDescriptor,
+        );
+      // Array literal slots are data properties; descriptor selection must not
+      // invoke an accessor on the value stored in the selected element.
+      const references = t.isArrayExpression(node)
+        ? remaining.length === 0
+          ? []
+          : semanticArrayPropertyReferences(node, [selected!])
+        : (descriptor?.references ??
+          semanticObjectPropertyReferences(node, [selected!], state));
+      // An unresolved intermediate receiver cannot prove absence of a setter.
+      if (
+        selection.requireLocalProof &&
+        remaining.length > 0 &&
+        references.length === 0
+      )
+        return undefined;
       for (const source of references)
         pending.push({
           node: source.node,
           path: [...source.path, ...remaining],
+          capturedSelections: semanticCapturedSelectionsAfterPropertyRead(
+            current.capturedSelections,
+            source,
+          ),
+        });
+    } else if (t.isNullLiteral(node)) {
+      selection.ownDescriptors?.push("absent");
+      // A null prototype terminates inherited descriptor selection.
+      continue;
+    } else if (
+      current.path.length > 0 &&
+      state.nativeObjectCreationAt?.(node) !== undefined
+    ) {
+      const creation = state.nativeObjectCreationAt(node)!;
+      if (!creation.ownPropertiesEmpty || current.path.length > 1)
+        return undefined;
+      selection.ownDescriptors?.push("absent");
+      if (lookup === "prototype")
+        pending.push({
+          node: creation.prototype,
+          path: current.path,
+          capturedSelections: current.capturedSelections,
         });
     } else if (
       (t.isClass(node) || t.isNewExpression(node)) &&
       current.path.length > 0
     ) {
       const [selected, ...remaining] = current.path;
+      if (selection.requireLocalProof) return undefined;
       const owners = t.isClass(node)
         ? [node]
         : semanticClassCandidates(node.callee, state);
@@ -235,14 +393,25 @@ const localAccessorMethods = (
           });
       }
     } else {
-      for (const source of branchReferenceValues(node, current.path))
-        pending.push(source);
+      const alternatives = branchReferenceValues(node, current.path);
+      if (selection.requireLocalProof && alternatives.length === 0)
+        return undefined;
+      for (const source of alternatives)
+        pending.push({
+          ...source,
+          capturedSelections: current.capturedSelections,
+        });
     }
   }
   return [...methods];
 };
 
 type AccessorEffectOperand =
+  | {
+      readonly kind: "integer-index-coercion";
+      readonly node: t.Node;
+      readonly target: t.MemberExpression;
+    }
   | { readonly kind: "escape"; readonly node: t.Node }
   | {
       readonly kind: "read";
@@ -324,6 +493,9 @@ const accessorEffectOperands = (
       for (const expression of node.quasi.expressions)
         operands.push({ kind: "escape", node: expression });
     }
+    const indexedStore = semanticIntegerIndexedStoreSource(node);
+    if (indexedStore !== undefined)
+      operands.push({ kind: "integer-index-coercion", ...indexedStore });
     for (const operand of semanticCoercionOperands(node))
       operands.push({ kind: "escape", node: operand });
     if (t.isTemplateLiteral(node) && !t.isTaggedTemplateExpression(parent))
@@ -417,8 +589,7 @@ export function* collectSemanticMemberMutationsSteps(
         selected,
         "get",
         state,
-        accessorKeyMayExist,
-        selectedLookup,
+        { keyMayExist: accessorKeyMayExist, lookup: selectedLookup },
       );
       const receiver = selected.slice(0, -1);
       if (methods === undefined) {
@@ -433,6 +604,11 @@ export function* collectSemanticMemberMutationsSteps(
           if (visitedCallables.has(callable)) continue;
           visitedCallables.add(callable);
           for (const operand of accessorEffectOperands(callable)) {
+            if (
+              operand.kind === "integer-index-coercion" &&
+              !observablePaths.mayConvertIntegerIndexedStore(operand.target)
+            )
+              continue;
             if (operand.kind === "invoke") {
               for (const target of returnedReferences(
                 operand.node,
@@ -460,7 +636,11 @@ export function* collectSemanticMemberMutationsSteps(
               const target = receiverReference
                 ? [...receiver, ...reference.path]
                 : reference.path;
-              if (operand.kind === "escape" || t.isSuper(operand.node))
+              if (
+                operand.kind === "escape" ||
+                operand.kind === "integer-index-coercion" ||
+                t.isSuper(operand.node)
+              )
                 effects.push({ node: targetRoot, path: target });
               else
                 pending.push({
@@ -475,6 +655,16 @@ export function* collectSemanticMemberMutationsSteps(
     }
     return effects;
   };
+  state.objectCopyMayInvalidateOwnDescriptors = (source) =>
+    getterEffects(source, [null], "own").some(
+      (effect) => effect.node === source && effect.path.length === 0,
+    );
+  const deferredIntrinsicReceivers = new Set<
+    t.CallExpression | t.OptionalCallExpression
+  >();
+  const deferredDescriptorTargets = new Set<
+    t.CallExpression | t.OptionalCallExpression
+  >();
   const parents = state.parentsByNode;
   const observablePaths = observableMutationPaths(state);
   const recordedRequiredEffects = new Set<string>();
@@ -597,6 +787,7 @@ export function* collectSemanticMemberMutationsSteps(
     readonly assignedSources?: readonly SemanticIterationSource[];
   })[] = [];
   const iterableReferences: IterableReference[] = [];
+  const deferredLocalStores = new Set<SemanticIterationSource>();
   const iterableReferenceKeys = new WeakMap<t.Node, Set<string>>();
   const deferIterable = (reference: IterableReference): void => {
     const keys = iterableReferenceKeys.get(reference.node) ?? new Set<string>();
@@ -829,18 +1020,29 @@ export function* collectSemanticMemberMutationsSteps(
       if (t.isIdentifier(expression)) {
         const binding = resolveBinding(expression, expression.name);
         if (binding === undefined) {
-          for (const path of ambientPaths(
-            expression,
-            current.originAt,
-            effect === "escape",
-            current.path.map((key) =>
-              key === null || typeof key === "object" ? null : String(key),
-            ),
-          ).paths)
-            if (retainSemanticAmbientEffect(state, effect, path, mutation)) {
-              recordedEffectCount += 1;
-              clearSemanticValueCaches(state);
-            }
+          if (selection?.projectAmbientPaths !== false)
+            for (const path of ambientPaths(
+              expression,
+              current.originAt,
+              effect === "escape",
+              current.path.map((key) =>
+                key === null || typeof key === "object" ? null : String(key),
+              ),
+            ).paths)
+              if (
+                retainSemanticAmbientEffect(
+                  state,
+                  effect,
+                  path,
+                  mutation,
+                  effect === "write" && assignedSources?.length === 1
+                    ? assignedSources[0]?.target
+                    : undefined,
+                )
+              ) {
+                recordedEffectCount += 1;
+                clearSemanticValueCaches(state);
+              }
           const processOrigin = semanticGlobalProcessOrigin(expression, state);
           if (processOrigin !== undefined)
             recordRequiredEffect(
@@ -996,7 +1198,7 @@ export function* collectSemanticMemberMutationsSteps(
                   [...source.projection, ...selectedPath],
                   "set",
                   state,
-                  accessorKeyMayExist,
+                  { keyMayExist: accessorKeyMayExist },
                 )?.length ?? 1) > 0,
             )
           )
@@ -1447,9 +1649,27 @@ export function* collectSemanticMemberMutationsSteps(
     if (
       (t.isMemberExpression(expression) ||
         t.isOptionalMemberExpression(expression)) &&
-      !state.retainedGlobalCallReceivers.has(expression.object)
+      (!state.retainedGlobalCallReceivers.has(expression.object) ||
+        !semanticIntrinsicReceiverIsSafe(mutation, state))
     )
-      markEscaped(expression.object, mutation);
+      markValue(
+        expression.object,
+        [],
+        new Set(),
+        "escape",
+        mutation,
+        mutation,
+        undefined,
+        false,
+        undefined,
+        true,
+        {
+          projectAmbientPaths: !semanticIntrinsicReceiverIsSafe(
+            mutation,
+            state,
+          ),
+        },
+      );
   };
   const markTarget = (node: t.Node, mutation: t.Node): void => {
     const sources = semanticIterationSources(
@@ -1475,11 +1695,84 @@ export function* collectSemanticMemberMutationsSteps(
           new Set(),
           "write",
           mutation,
-          mutation,
+          target.object,
           undefined,
           false,
           sourcesByTarget.get(target) ?? [],
         );
+  };
+  const completeSetterSelection = {
+    keyMayExist: () => true,
+    requireLocalProof: true,
+  };
+  const storeMayInvokeSetter = (source: SemanticIterationSource): boolean => {
+    const target = source.target;
+    if (target === undefined) return true;
+    if (observablePaths.integerIndexedStore(target)) return false;
+    const key = semanticStaticPropertyKey(target.property, target.computed);
+    const ambientSetter = semanticStoreMayReachAmbientSetter(state, key, {
+      mutation: source.mutation,
+      target,
+    });
+    const ownDescriptors: JavaScriptOwnDescriptorPresence[] = [];
+    const ownSetters =
+      ambientSetter || accessorKeyMayExist(key, "set")
+        ? localAccessorMethods(target.object, [key], "set", state, {
+            ...completeSetterSelection,
+            beforeStore: { mutation: source.mutation, target },
+            lookup: "own",
+            ownDescriptors,
+          })
+        : undefined;
+    if (
+      ownSetters !== undefined &&
+      ownDescriptors.length > 0 &&
+      ownDescriptors.every((presence) => presence === "present")
+    )
+      return ownSetters.length > 0;
+    if (ambientSetter) return true;
+    const prototypeFacts = state.ambientStorePrototypeFacts?.({
+      mutation: source.mutation,
+      target,
+    });
+    for (const prototype of prototypeFacts?.localPrototypes ?? []) {
+      const accessors = localAccessorMethods(prototype, [key], "set", state, {
+        ...completeSetterSelection,
+        beforeStore: { mutation: source.mutation, target },
+        lookup: "own",
+      });
+      if (accessors === undefined || accessors.length > 0) return true;
+    }
+    if (prototypeFacts !== undefined && ownDescriptors.length > 0)
+      return ownSetters === undefined || ownSetters.length > 0;
+    const setters = localAccessorMethods(target.object, [key], "set", state, {
+      ...completeSetterSelection,
+      beforeStore: { mutation: source.mutation, target },
+    });
+    return setters === undefined || setters.length > 0;
+  };
+  const exposeStoreReceiver = (source: SemanticIterationSource): void => {
+    if (source.target === undefined) return;
+    const key = semanticStaticPropertyKey(
+      source.target.property,
+      source.target.computed,
+    );
+    if (
+      !accessorKeyMayExist(key, "set") &&
+      !semanticStoreMayReachAmbientSetter(state, key, {
+        mutation: source.mutation,
+        target: source.target,
+      })
+    )
+      return;
+    markValue(
+      source.target.object,
+      [],
+      new Set(),
+      "escape",
+      source.mutation,
+      source.target.object,
+    );
   };
   const writeOnlyMembers = new WeakSet<t.Node>();
   yield* traverseJavaScriptAstSteps(program, {
@@ -1491,24 +1784,35 @@ export function* collectSemanticMemberMutationsSteps(
       for (const source of semanticIterationSources(node, parent)) {
         // Local stores retain their sources on member writes. Only the ambient
         // identity owner can establish that storing itself exposes a reference.
+        const target = source.target;
+        const setterCandidate =
+          source.kind === "reference-store" &&
+          target !== undefined &&
+          (accessorKeyMayExist(
+            semanticStaticPropertyKey(target.property, target.computed),
+            "set",
+          ) ||
+            semanticStoreMayReachAmbientSetter(
+              state,
+              semanticStaticPropertyKey(target.property, target.computed),
+              { mutation: source.mutation, target },
+            ));
+        const invokesSetter =
+          source.kind === "reference-store" &&
+          (target === undefined ||
+            !state.escapingReferenceStores.has(target) ||
+            setterCandidate) &&
+          storeMayInvokeSetter(source);
         if (
           source.kind === "reference-store" &&
           source.target !== undefined &&
           !state.escapingReferenceStores.has(source.target) &&
-          (localAccessorMethods(
-            source.target.object,
-            [
-              semanticStaticPropertyKey(
-                source.target.property,
-                source.target.computed,
-              ),
-            ],
-            "set",
-            state,
-            accessorKeyMayExist,
-          )?.length ?? 1) === 0
-        )
+          !invokesSetter
+        ) {
+          deferredLocalStores.add(source);
           continue;
+        }
+        if (invokesSetter) exposeStoreReceiver(source);
         deferIterable({
           ...source,
           path: source.projection,
@@ -1519,10 +1823,14 @@ export function* collectSemanticMemberMutationsSteps(
           iterationOnly: source.kind === "iteration",
         });
       }
-      for (const operand of semanticCoercionOperands(node, (operand) => {
-        const value = evaluateSemanticExpression(operand, state, node);
-        return value.status === "object" || value.status === "array";
-      }))
+      for (const operand of semanticCoercionOperands(
+        node,
+        (operand) => {
+          const value = evaluateSemanticExpression(operand, state, node);
+          return value.status === "object" || value.status === "array";
+        },
+        observablePaths.mayConvertIntegerIndexedStore,
+      ))
         if (!semanticKnownSymbolKey(operand, state)) markEscaped(operand, node);
       if (t.isTemplateLiteral(node) && !t.isTaggedTemplateExpression(parent))
         for (const expression of node.expressions)
@@ -1592,9 +1900,14 @@ export function* collectSemanticMemberMutationsSteps(
               mutation: node,
               originAt: node,
             });
-          else markEscaped(argument, node);
+          else if (semanticNativeMutationTargetIsSafe(node, argument, state)) {
+            if (t.isCallExpression(node) || t.isOptionalCallExpression(node))
+              deferredDescriptorTargets.add(node);
+          } else markEscaped(argument, node);
         // Constructing a member does not pass its container as `this`.
         if (!t.isNewExpression(node)) {
+          if (state.intrinsicReceiverCalls.has(node))
+            deferredIntrinsicReceivers.add(node);
           const mapLookup = isIntrinsicMapLookup(node, state);
           if (mapLookup === undefined) deferredMapReceivers.add(node);
           else if (!mapLookup) markReceiver(node.callee, node);
@@ -1613,7 +1926,10 @@ export function* collectSemanticMemberMutationsSteps(
   while (
     pendingReferences.length > 0 ||
     iterableReferences.length > 0 ||
-    deferredMapReceivers.size > 0
+    deferredLocalStores.size > 0 ||
+    deferredMapReceivers.size > 0 ||
+    deferredIntrinsicReceivers.size > 0 ||
+    deferredDescriptorTargets.size > 0
   ) {
     const effectsBefore = recordedEffectCount;
     const iterablesBefore = iterableReferences.length;
@@ -1687,6 +2003,20 @@ export function* collectSemanticMemberMutationsSteps(
           reference,
         );
     }
+    for (const source of deferredLocalStores) {
+      if (!storeMayInvokeSetter(source)) continue;
+      deferredLocalStores.delete(source);
+      exposeStoreReceiver(source);
+      deferIterable({
+        ...source,
+        path: source.projection,
+        fallbackPath: source.projection,
+        bindings: new Set(),
+        effect: "escape",
+        originAt: source.mutation,
+        iterationOnly: false,
+      });
+    }
     for (const [index, reference] of [...iterableReferences].entries()) {
       if (index % 64 === 0) yield;
       if (semanticReferenceSourcesInactive(reference, state)) continue;
@@ -1715,6 +2045,19 @@ export function* collectSemanticMemberMutationsSteps(
         reference.definiteReceiver === true,
         reference,
       );
+    }
+    for (const node of deferredDescriptorTargets) {
+      const target = node.arguments[0];
+      if (!t.isNode(target) || t.isSpreadElement(target)) continue;
+      if (semanticNativeMutationTargetIsSafe(node, target, state)) continue;
+      deferredDescriptorTargets.delete(node);
+      markEscaped(target, node);
+    }
+    // Recheck parsed native receiver facts when later getter/alias effects settle.
+    for (const node of deferredIntrinsicReceivers) {
+      if (semanticIntrinsicReceiverIsSafe(node, state)) continue;
+      deferredIntrinsicReceivers.delete(node);
+      markReceiver(node.callee, node);
     }
     // Native Map lookup methods do not expose their receiver to user code.
     // Settle genuine effects first, then replay every unproven receiver escape.
@@ -1941,6 +2284,12 @@ const observableMutationPaths = (
     path: PropertyPath,
     effect: ValueEffect,
   ) => PropertyPath | null;
+  readonly mayConvertIntegerIndexedStore: (
+    target: t.MemberExpression | t.OptionalMemberExpression,
+  ) => boolean;
+  readonly integerIndexedStore: (
+    target: t.MemberExpression | t.OptionalMemberExpression,
+  ) => boolean;
   readonly repeatsUnpruned: (
     bindingId: string,
     prefix: PropertyPath,
@@ -2059,6 +2408,10 @@ const observableMutationPaths = (
           isIntrinsicTypedArrayConstruction(expression, state)
         )
           (observer.origins ??= new Set()).add("typed-array");
+        else if (state.nativeObjectCreationAt?.(expression) !== undefined)
+          // The construction owner proves an ordinary allocation. Its slots
+          // remain observable even when its property values are not evaluated.
+          (observer.origins ??= new Set()).add("opaque");
         else if (
           t.isNewExpression(expression) &&
           semanticClassCandidates(expression.callee, state).length === 0
@@ -2264,5 +2617,28 @@ const observableMutationPaths = (
     repeated.set(key, result);
     return result;
   };
-  return { normalize, repeatsUnpruned };
+  const integerIndexedStoreOrigins = (
+    target: t.MemberExpression | t.OptionalMemberExpression,
+  ): ReadonlySet<MutationObservableOrigin> | undefined => {
+    if (!isTypedArrayNumericIndex(target.property, target.computed))
+      return undefined;
+    const observer = expressionNode(target.object);
+    settle();
+    return observer.origins;
+  };
+  const integerIndexedStore = (
+    target: t.MemberExpression | t.OptionalMemberExpression,
+  ): boolean => {
+    const origins = integerIndexedStoreOrigins(target);
+    return origins?.size === 1 && origins.has("typed-array");
+  };
+  const mayConvertIntegerIndexedStore = (
+    target: t.MemberExpression | t.OptionalMemberExpression,
+  ): boolean => integerIndexedStoreOrigins(target)?.has("typed-array") === true;
+  return {
+    normalize,
+    repeatsUnpruned,
+    integerIndexedStore,
+    mayConvertIntegerIndexedStore,
+  };
 };

@@ -81,8 +81,7 @@ const fixture = async (
     const activeVersionCommand =
       activeVersion && spawn.arguments.includes("--version");
     if (!captureCommand && !activeVersionCommand) return launched;
-    if (activeVersionCommand) controller.abort(reason);
-    if (mode === "active" && captureCommand)
+    if (activeVersionCommand || (mode === "active" && captureCommand))
       launched.process.stdout?.on("data", (chunk: Buffer) => {
         if (chunk.toString().includes("ready")) controller.abort(reason);
       });
@@ -145,7 +144,10 @@ const probeCleanupFixture = async (rereadCloseFailure = false) => {
     if (!rereadCloseFailure) return { ...snapshot, sha256: "0".repeat(64) };
     const resource = `executable-read:${tshark}`;
     const lease = new AnalysisCleanupLease(async () => {}, [resource]);
-    args[4]?.retain({ kind: "lease", resource, lease });
+    const scope = args[4];
+    if (scope === undefined)
+      throw new Error("Expected artifact resource owner");
+    scope.retain({ kind: "lease", resource, lease });
     throw new ArtifactReaderFailure("io", "injected executable read failure", {
       cleanup: { reason: "injected file close failure", resources: [resource] },
       cleanupLeases: [lease],
@@ -200,6 +202,7 @@ it("keeps an executable re-read's own cleanup live beside the probe's pending cl
   );
   await provider.close();
   expect(result.error.cleanupIncomplete).toBe(false);
+  expect(result.error.cleanupResources).toEqual([]);
 });
 
 it("availability surfaces a probe's pending cleanup instead of reporting the tool unavailable", async () => {

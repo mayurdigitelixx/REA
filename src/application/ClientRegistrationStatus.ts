@@ -1,3 +1,4 @@
+import { analysisErrorUserMessage } from "../domain/analysisErrorPresentation.js";
 import { RegularFileCleanupFailure } from "../filesystem/OwnedRegularFile.js";
 import { readClientPolicyBlock } from "./GeminiClientSettings.js";
 import { readEffectiveClientRegistrationConfiguration } from "./ClientConfigurationFiles.js";
@@ -245,7 +246,7 @@ export const readClientRegistrationInspections = async (
           config_path: configPath,
           command: [],
           state: "invalid",
-          remediation: `${parsedRegistration.error.message}: ${parsedRegistration.error.settings.map(({ setting, constraint }) => `${setting}: ${constraint}`).join("; ")}`,
+          remediation: analysisErrorUserMessage(parsedRegistration.error),
         });
         continue;
       }

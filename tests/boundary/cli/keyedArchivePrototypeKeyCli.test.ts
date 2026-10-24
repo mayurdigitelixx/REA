@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { buildBinary } from "plist";
 import { expect } from "vitest";
 
 import { parseEvidence } from "../../../src/domain/evidence.js";
@@ -13,6 +12,7 @@ import { cliTest } from "../../support/cli/cliFixture.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { keyedArchiveResultSchema } from "../../../src/domain/apple/keyedArchive.js";
 import { connectLocalToolsMcp } from "../../fixtures/localToolsMcp.js";
+import { buildBinaryKeyedArchive } from "../../fixtures/binaryKeyedArchive.js";
 
 cliTest(
   "compiled CLI decodes formatted XML prototype keys",
@@ -58,7 +58,7 @@ cliTest(
     );
     // Binary encoding is an independent control, not a decode of the XML fixture.
     const binary = Buffer.from(
-      buildBinary({
+      buildBinaryKeyedArchive({
         $archiver: "NSKeyedArchiver",
         $version: 100000,
         $objects: ["$null", { userID: 42 }],

@@ -245,7 +245,7 @@ export class ZipArtifactReader implements ArtifactReader {
     }
   }
 
-  open(entry: ArtifactEntry, signal?: AbortSignal): Promise<Readable> {
+  async open(entry: ArtifactEntry, signal?: AbortSignal): Promise<Readable> {
     assertArtifactReadActive(signal);
     const stored = this.#entries.get(entry.adapterKey);
     if (stored === undefined || !sameArtifactEntry(entry, stored.metadata))

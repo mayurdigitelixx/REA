@@ -6,7 +6,7 @@ import { err, ok } from "../domain/result.js";
 import {
   cancelled,
   failure,
-  filesystemFailureDetail,
+  filesystemFailureFacts,
   rootFilesystemFailure,
 } from "./ReferenceSourceReaderErrors.js";
 import { isPathWithinRoot } from "../domain/localPath.js";
@@ -77,14 +77,20 @@ export const validateDirectory = async (
         code: "cancelled",
         message: "Reference source traversal cancelled",
       };
-    const detail = filesystemFailureDetail(
+    const facts = filesystemFailureFacts(
       cause,
       "Directory identity could not be verified",
     );
-    if (detail === undefined) throw cause;
+    if (facts === undefined) throw cause;
+    const { detail } = facts;
     return {
       ok: false,
-      code: "io",
+      // A selected, previously verified directory disappearing or becoming a
+      // non-directory is an observed identity change, rather than an I/O outage.
+      code:
+        facts.systemCode === "ENOENT" || facts.systemCode === "ENOTDIR"
+          ? "changed"
+          : "io",
       ...detail,
     };
   }

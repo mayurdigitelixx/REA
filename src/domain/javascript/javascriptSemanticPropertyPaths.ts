@@ -140,13 +140,32 @@ export class SemanticPropertyPathCoverage {
 
   /** Query retained prefixes without changing the coverage index. */
   covers(path: JavaScriptSemanticPropertyPath): boolean {
+    return this.#matches(path, false);
+  }
+
+  /** Overlap with an exact path includes both retained ancestors and descendants. */
+  overlaps(path: readonly (string | number)[]): boolean {
+    return this.#matches(path, true);
+  }
+
+  #matches(
+    path: JavaScriptSemanticPropertyPath,
+    includeDescendants: boolean,
+  ): boolean {
     const pending = [{ node: this.#root, offset: 0 }];
     while (pending.length > 0) {
       const current = pending.pop();
       if (current === undefined) break;
       if (current.node.terminal) return true;
       const key = path[current.offset];
-      if (key === undefined) continue;
+      if (key === undefined) {
+        if (
+          includeDescendants &&
+          (current.node.exact.size > 0 || current.node.selectors.size > 0)
+        )
+          return true;
+        continue;
+      }
       if (key !== null && typeof key !== "object") {
         const exact = current.node.exact.get(String(key));
         if (exact !== undefined)

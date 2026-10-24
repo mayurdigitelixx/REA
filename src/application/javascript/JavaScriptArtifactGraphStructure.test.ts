@@ -423,3 +423,55 @@ it.each([
     }
   },
 );
+
+it.each(["resolve", "load"] as const)(
+  "retains captured native-addon %s semantics when an argument overwrites the resolver",
+  (operation) => {
+    const source = `import {createRequire as make} from 'node:module';const load=make(import.meta.url);load${operation === "resolve" ? ".resolve" : ""}('./addon.node',(load.resolve=custom,{paths:[__dirname]}));`;
+    const main: JavaScriptArtifactFile = {
+      ...skippedFile(),
+      path: "main.mjs",
+      text: { included: true, value: source },
+    };
+    const addon: JavaScriptArtifactFile = {
+      ...skippedFile(),
+      path: "addon.node",
+      sha256: "b".repeat(64),
+      kind: "native-addon",
+      text: { included: false, reason: "not-applicable" },
+    };
+    const analysis = analysisFor([
+      {
+        file: main,
+        javascript: analyzeJavaScriptStaticSource(source),
+        semantic: null,
+      },
+      { file: addon, javascript: null, semantic: null },
+    ]);
+    const base = contextFor(main, analysis);
+    const context: JavaScriptArtifactGraphContext = {
+      ...base,
+      fileSet: { ...base.fileSet, files: [main, addon] },
+      filesByPath: new Map([
+        [main.path, main],
+        [addon.path, addon],
+      ]),
+    };
+    addJavaScriptArtifactFiles(context);
+    const steps = addJavaScriptStaticFindingsSteps(context);
+    while (!steps.next().done) {}
+    const references = context.accumulator
+      .edges()
+      .filter(
+        ({ properties }) =>
+          properties.specifier === "./addon.node" &&
+          properties.kind === "require",
+      );
+    expect(references).toEqual([
+      expect.objectContaining({
+        relation: operation === "resolve" ? "imports" : "loads",
+        properties: expect.objectContaining({ operation }),
+      }),
+    ]);
+  },
+);

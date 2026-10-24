@@ -241,6 +241,16 @@ const decodeInterfaceBuilderBundle = async (
               unknownScalarCount: 0,
               numberLiterals: undefined,
             };
+        // Scalar source facts remain valid even when the decoded container is
+        // not a recognized Interface Builder archive.
+        if (omittedPrototypeKeys !== 0)
+          prototypeKeyOmissions.set(entry.path, omittedPrototypeKeys);
+        if (unknownDateCount !== 0)
+          unknownDates.set(entry.path, unknownDateCount);
+        if (datePrecisionOverlapCount > 0)
+          datePrecisionOverlaps.set(entry.path, datePrecisionOverlapCount);
+        if (unknownScalarCount !== 0)
+          unknownScalars.set(entry.path, unknownScalarCount);
         requireInterfaceBuilderArchive(raw);
         if (nib !== null && nib.unexaminedSources.length > 0)
           unexaminedSources.set(entry.path, nib.unexaminedSources);
@@ -252,14 +262,6 @@ const decodeInterfaceBuilderBundle = async (
           nonFiniteReals.set(entry.path, nib.nonFiniteRealCount);
         if (nib !== null && nib.negativeZeroRealCount > 0)
           negativeZeroReals.set(entry.path, nib.negativeZeroRealCount);
-        if (omittedPrototypeKeys !== 0)
-          prototypeKeyOmissions.set(entry.path, omittedPrototypeKeys);
-        if (unknownDateCount !== 0)
-          unknownDates.set(entry.path, unknownDateCount);
-        if (datePrecisionOverlapCount > 0)
-          datePrecisionOverlaps.set(entry.path, datePrecisionOverlapCount);
-        if (unknownScalarCount !== 0)
-          unknownScalars.set(entry.path, unknownScalarCount);
         const documentHash = createHash("sha256").update(bytes).digest("hex");
         documents.push({
           relativePath: entry.path,

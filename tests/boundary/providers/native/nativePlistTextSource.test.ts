@@ -148,7 +148,7 @@ it.for<TextSourceCase>([
   const replay = new NativeFixtureRunner({ file: fixture.description });
   const tools: string[] = [];
   let conversionIndex = 0;
-  let validations = 0;
+  const admissions: Array<readonly string[]> = [];
   const client = new NativeMacOSProvider(
     {},
     {
@@ -158,9 +158,14 @@ it.for<TextSourceCase>([
         if (tool !== "plutil" || !result.ok) return result;
         if (args[0] === "-lint") {
           expect(args).toEqual(["-lint", "--", path]);
-          validations += 1;
-          return result;
+          admissions.push([...args]);
+          return ok({
+            ...result.value,
+            stdout: `${path}: OK\n`,
+            stdoutBytes: Buffer.byteLength(`${path}: OK\n`),
+          });
         }
+        expect(args[0]).toBe("-convert");
         const conversion = fixture.conversions[conversionIndex++];
         if (conversion === undefined)
           throw new Error("Unexpected conversion of directly supported source");
@@ -196,7 +201,7 @@ it.for<TextSourceCase>([
   expect(result.provenance.map((item) => item.tool)).toEqual(tools);
   const directXml =
     fixture.format === "xml" && fixture.conversions.length === 0;
-  expect(validations).toBe(directXml ? 1 : 0);
+  expect(admissions).toEqual(directXml ? [["-lint", "--", path]] : []);
   expect(tools).toEqual([
     "file",
     ...(directXml ? ["plutil"] : []),

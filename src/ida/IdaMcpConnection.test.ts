@@ -324,9 +324,8 @@ it("bounds a stalled health poll by the remaining readiness deadline", async () 
     expect(failure).toMatchObject({
       operation: "server_health",
       timeoutMs,
-      userMessage: expect.stringContaining("800 ms"),
+      userMessage: expect.stringMatching(/800 ms.*config_json_get/u),
       remediationAction: expect.stringContaining("timeoutMs"),
-      cause: busy,
       diagnostics: {
         busy_tool: "config_json_get",
         health_request_operation: "server_health",

@@ -226,6 +226,12 @@ it.for<PlistSourceCase>([
       expectedTools ??
         (xmlFallback ? ["file", "plutil", "plutil"] : ["file", "plutil"]),
     );
+    if (expected === "xml")
+      expect(
+        result.provenance
+          .filter(({ tool }) => tool === "plutil")
+          .map(({ command }) => command.slice(1)),
+      ).toEqual([["-lint", "--", "$PLIST"]]);
     expect(result.limitations).toEqual(
       expectedLimitations ??
         (xmlFallback ? [expect.stringContaining("XML conversion")] : []),

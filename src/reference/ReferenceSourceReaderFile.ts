@@ -14,7 +14,7 @@ import type { AnalysisCleanupObservation } from "../domain/analysisErrorBase.js"
 
 import {
   entryFailure,
-  filesystemFailureDetail,
+  filesystemFailureFacts,
   safeSize,
 } from "./ReferenceSourceReaderErrors.js";
 import {
@@ -295,11 +295,12 @@ const readStableFileEntry = async (
         "File is no longer a regular file",
         safeSize(expected.size),
       );
-    const detail = filesystemFailureDetail(
+    const facts = filesystemFailureFacts(
       cause,
       "File could not be read safely",
     );
-    if (detail === undefined) throw cause;
+    if (facts === undefined) throw cause;
+    const { detail } = facts;
     return entryFailure(
       path,
       "file",

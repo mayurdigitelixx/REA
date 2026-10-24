@@ -75,9 +75,12 @@ it.skipIf(process.platform === "win32").each([false, true])(
     const result = await manager.execute(started.value.session_id, "dr");
     expect(result.ok).toBe(false);
     if (!result.ok && incomplete)
-      expect(result.error.cleanup?.reason).toContain(
-        "injected stop uncertainty",
-      );
+      expect(result.error.diagnostics?.cleanup_error).toMatchObject({
+        code: "cleanup_incomplete",
+        details: {
+          reason: expect.stringContaining("injected stop uncertainty"),
+        },
+      });
   },
 );
 

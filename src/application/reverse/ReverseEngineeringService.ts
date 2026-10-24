@@ -509,6 +509,23 @@ export class ReverseEngineeringService {
           },
         );
       const capture = execFileOutputFailure(cause);
+      const capturedOutput =
+        capture === undefined
+          ? undefined
+          : {
+              stdout: capture.stdout,
+              stderr: capture.stderr,
+              truncated: capture.outputTruncated,
+              stdout_bytes:
+                capture.stdoutBytes ?? Buffer.byteLength(capture.stdout),
+              stderr_bytes:
+                capture.stderrBytes ?? Buffer.byteLength(capture.stderr),
+              exit_code:
+                !capture.collectionFailure && typeof capture.code === "number"
+                  ? capture.code
+                  : null,
+              signal: capture.signal,
+            };
       const code = capture?.code ?? commandFailureCode(cause);
       if (earlyFailure === undefined && code === "E2BIG")
         earlyFailure = new AnalysisResourceConstraintError(
@@ -557,6 +574,9 @@ export class ReverseEngineeringService {
             `Unable to run configured command (${String(code ?? "unknown error")})`,
             {
               cause,
+              ...(cause instanceof OwnedOutputFailure && cause.launchFailure
+                ? {}
+                : { capturedOutput }),
               userMessage: `Could not launch the selected ${provider} executable ${JSON.stringify(command)} (${String(code ?? "unknown error")}).`,
               remediationAction: `Set ${setting} to an installed executable ${provider === "objdump" ? "GNU objdump" : "Rizin"} command, or make that command available on PATH. Check execute permission on the command and search permission on its parent directories before retrying.`,
               diagnostics: {
@@ -568,6 +588,16 @@ export class ReverseEngineeringService {
             },
           );
         }
+      }
+      // A launch refusal can still carry collected bytes. Preserve them through
+      // the ordinary command-observation owner while retaining launch authority.
+      if (
+        earlyFailure !== undefined &&
+        capture !== undefined &&
+        !(cause instanceof OwnedOutputFailure && cause.launchFailure)
+      ) {
+        failure = earlyFailure;
+        earlyFailure = undefined;
       }
       if (earlyFailure === undefined && capture !== undefined) {
         stdout = capture.stdout;
@@ -581,18 +611,7 @@ export class ReverseEngineeringService {
           exitCode = null;
           completionStatus = "unknown";
         }
-        const capturedOutput = {
-          stdout,
-          stderr,
-          truncated: outputTruncated,
-          stdout_bytes: stdoutBytes,
-          stderr_bytes: stderrBytes,
-          exit_code:
-            !capture.collectionFailure && typeof capture.code === "number"
-              ? capture.code
-              : null,
-          signal: capture.signal,
-        };
+
         if (commandCancelled(signal, cause, code))
           failure = new AnalysisCancelledError(operation, {
             cause: callerCancellationCause(signal, cause),

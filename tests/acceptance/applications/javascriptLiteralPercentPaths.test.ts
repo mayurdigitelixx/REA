@@ -437,7 +437,7 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
         }),
         [`a${index}/index.js`]: `require("../shared/window${index}.cjs");`,
         [`shared/window${index}.cjs`]:
-          'const { BrowserWindow } = require("electron"); const win = new BrowserWindow(); win.loadFile("index.html");',
+          'const { BrowserWindow } = require("electron"); new BrowserWindow().loadFile("index.html");',
         [`a${index}/index.html`]: "package index launch page",
         "index.html": "artifact root decoy",
       });

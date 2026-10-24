@@ -65,6 +65,19 @@ it.each([
     true,
   ],
   [
+    "const get=()=>({});const alias=get;Object.setPrototypeOf(get,{call:()=>module});alias.call(null)",
+    true,
+  ],
+  [
+    "const get=()=>({});const invoke=get.call;Object.setPrototypeOf(get,{call:()=>module});invoke.call(get,null)",
+    false,
+  ],
+  [
+    "const get=()=>({});get.call(null,Object.setPrototypeOf(get,{call:()=>module}))",
+    false,
+  ],
+
+  [
     "const get=()=>({});Object.setPrototypeOf(get,{call:()=>module});get.call=()=>({});get.call(null)",
     false,
   ],

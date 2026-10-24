@@ -87,7 +87,7 @@ describe("native macOS provider discovery", () => {
   ])(
     "preserves the exact signing identifier %j reported by codesign",
     (identifier) => {
-      const parsed = parseCodeSignature(
+      const { signature: parsed } = parseCodeSignature(
         `Identifier=${identifier}\nFormat=Mach-O thin (arm64)\nTeamIdentifier=not set\n`,
         false,
       );
@@ -102,7 +102,7 @@ describe("native macOS provider discovery", () => {
     (newline) => {
       const path = "/apps/x\r\nAuthority=Forged\nIdentifier=forged";
       const identifier = "x\r\nFormat=forged\nAuthority=Forged-5555\r";
-      const parsed = parseCodeSignature(
+      const { signature: parsed } = parseCodeSignature(
         [
           `Executable=${path}`,
           `Identifier=${identifier}`,
@@ -149,7 +149,7 @@ describe("native macOS provider discovery", () => {
   ])(
     "frames the identifier without a matching executable path: %j",
     ({ executable, paths, newline, identifier }) => {
-      const parsed = parseCodeSignature(
+      const { signature: parsed } = parseCodeSignature(
         `${executable}Identifier=${identifier}${newline}Format=Mach-O thin (arm64)${newline}TeamIdentifier=not set${newline}`,
         false,
         paths,
@@ -1713,23 +1713,40 @@ describe("native macOS provider failures and parsing", () => {
         ?.alignment,
     ).toBe(16384);
   });
+});
+
+describe("native codesign parsing", () => {
+  it.each([
+    ["app bundle with Mach-O thin (arm64)", ["arm64"]],
+    ["Mach-O thin (x86_64)", ["x86_64"]],
+    ["app bundle with Mach-O universal (x86_64 arm64)", ["x86_64", "arm64"]],
+    ["Mach-O thin (arm64 x86_64)", null],
+    ["unrecognized format", null],
+  ] as const)(
+    "retains parsed architecture facts for %s",
+    (format, expected) => {
+      expect(
+        parseCodeSignature(`Format=${format}\n`, false).architectures,
+      ).toEqual(expected);
+    },
+  );
 
   it("reads hardened runtime only from CodeDirectory flags", () => {
     expect(
       parseCodeSignature("Diagnostic: runtime policy unavailable", false)
-        .hardened_runtime,
+        .signature.hardened_runtime,
     ).toBeNull();
     expect(
       parseCodeSignature(
         "CodeDirectory v=20500 flags=0x10000(runtime) hashes=10+7",
         false,
-      ).hardened_runtime,
+      ).signature.hardened_runtime,
     ).toBe(true);
     expect(
       parseCodeSignature(
         "CodeDirectory v=20500 flags=0x2(adhoc,hard) runtime=1",
         false,
-      ).hardened_runtime,
+      ).signature.hardened_runtime,
     ).toBe(false);
   });
 });

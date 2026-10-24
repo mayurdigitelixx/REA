@@ -103,6 +103,8 @@ export const semanticStaticPropertyKey = (
   computed: boolean,
 ): string | null => {
   property = unwrapJavaScriptExpression(property).node;
+  while (t.isSequenceExpression(property) && property.expressions.length > 0)
+    property = unwrapJavaScriptExpression(property.expressions.at(-1)!).node;
   if (
     t.isStringLiteral(property) ||
     t.isNumericLiteral(property) ||

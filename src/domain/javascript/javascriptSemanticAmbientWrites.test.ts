@@ -128,3 +128,30 @@ box.trigger;`;
   ).toEqual(["box.trigger", "box.trigger"]);
   expect(effects[0]?.node).not.toBe(effects[1]?.node);
 });
+
+it("retains worker uncertainty when member alias branching reaches the precise budget", () => {
+  const source = [
+    'import { Worker } from "node:worker_threads";',
+    "const alias0 = globalThis;",
+    ...Array.from(
+      { length: 40 },
+      (_, index) =>
+        `const alias${index + 1} = flag${index} ? alias${index}.globalThis : alias${index}.window;`,
+    ),
+    "alias40.URL = replacement;",
+    'new Worker(new URL("./worker.js", import.meta.url));',
+  ].join("\n");
+  const analysis = analyzeJavaScriptStaticSource(source);
+  expect(analysis.parse_status).toBe("partial");
+  expect(analysis.references).toContainEqual(
+    expect.objectContaining({
+      kind: "worker",
+      specifier: null,
+    }),
+  );
+  expect(analysis.limitations).toContainEqual(
+    expect.stringContaining(
+      "Alias selection expansion was conservatively bounded",
+    ),
+  );
+});

@@ -70,7 +70,11 @@ export function* collectJavaScriptIdentityWritesSteps(
   ) => JavaScriptIntrinsicInvocation | undefined,
   staticString: (node: t.Node | undefined) => string | undefined,
   freshObject: (node: t.Node) => boolean,
-  retain: (node: t.Node, path: readonly (string | null)[]) => void,
+  retain: (
+    node: t.Node,
+    path: readonly (string | null)[],
+    storeTarget?: t.MemberExpression | t.OptionalMemberExpression,
+  ) => void,
   observeInvocation?: (
     node:
       | t.CallExpression
@@ -176,7 +180,7 @@ export function* collectJavaScriptIdentityWritesSteps(
           continue;
         const key = semanticStaticPropertyKey(member.property, member.computed);
         for (const identity of origin(member.object, "member", node))
-          retain(node, [...identity, key]);
+          retain(node, [...identity, key], member);
       }
     },
   });

@@ -155,6 +155,13 @@ describe.skipIf(process.platform !== "darwin")(
             "file",
             ...(format === "xml" ? ["plutil"] : []),
           ]);
+          if (format === "xml")
+            expect(cliResult.provenance[1]?.command).toEqual([
+              "/usr/bin/plutil",
+              "-lint",
+              "--",
+              "$PLIST",
+            ]);
           let leaf: unknown = cliResult.value;
           for (let level = 0; level < depth; level += 1) {
             expect(leaf).toHaveProperty("level");

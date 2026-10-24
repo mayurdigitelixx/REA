@@ -1,3 +1,4 @@
+import { configuredUpdateNoticeFactory } from "../server/UpdateNotices.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
@@ -204,6 +205,9 @@ export const runDeferred = async (
                   dependencies.setExitCode(1);
                   throw cause;
                 }),
+            );
+            server.updateNoticeFactory = configuredUpdateNoticeFactory(
+              dependencies.env,
             );
             return server;
           });

@@ -451,3 +451,52 @@ it.for([
     });
   },
 );
+
+it("registers admitted execution before a command runner can reenter client close", async () => {
+  const { client, runner } = await fixture();
+  let enter!: () => void;
+  let resume!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  let finished = false;
+  let closing: ReturnType<typeof client.close> | undefined;
+  const originalRun = runner.run.bind(runner);
+  const run = vi
+    .spyOn(runner, "run")
+    .mockImplementationOnce(async (...args) => {
+      closing = client.close().then((result) => {
+        finished = true;
+        return result;
+      });
+      enter();
+      await gate;
+      return originalRun(...args);
+    });
+  onTestFinished(() => {
+    resume();
+    run.mockRestore();
+  });
+  const inspecting = client.execute("list_architectures", {});
+  await entered;
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(finished).toBe(false);
+    const refused = await client.execute("list_architectures", {});
+    expect(refused).toMatchObject({
+      ok: false,
+      error: { reason: "Native provider client is closed" },
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  } finally {
+    resume();
+  }
+  const inspected = await inspecting;
+  expect(inspected.ok, inspected.ok ? undefined : inspected.error.message).toBe(
+    true,
+  );
+  expect((await closing)?.ok).toBe(true);
+});

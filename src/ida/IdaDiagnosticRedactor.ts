@@ -70,7 +70,7 @@ const authorizationPayloads = (header: string): readonly string[] => {
     /^([!#$%&'*+.^_`|~\dA-Za-z-]+)[ \t]+([\s\S]+)$/u,
   );
   const payload = credentials?.[2];
-  if (payload === undefined) return [];
+  if (payload === undefined || payload.trim().length === 0) return [];
   if (credentials?.[1]?.toLowerCase() === "basic")
     return [payload, ...basicPayloads(payload)];
   const values = [payload];

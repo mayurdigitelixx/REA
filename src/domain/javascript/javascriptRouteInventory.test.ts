@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { analyzeJavaScriptStaticSource } from "./javascriptStaticAnalysis.js";
+import { analyzeCommonJsStaticFixture } from "../../../tests/fixtures/javascriptCommonJsAnalysis.js";
 import { completeSemanticSteps } from "./javascriptSemanticTraversal.js";
 import {
   buildJavaScriptRouteInventorySteps,
@@ -19,7 +19,7 @@ const source = (
   container_sha256: null,
   status: "complete",
   reason: null,
-  facts: analyzeJavaScriptStaticSource(text).routes!,
+  facts: analyzeCommonJsStaticFixture(text).routes!,
   ...(url === null && key.startsWith("app/")
     ? {
         next_app_context: {

@@ -179,3 +179,23 @@ it("retains references returned from tagged invocation through the ordinary call
   `),
   ).toEqual({ status: "literal", value: 1 });
 });
+
+it.each([
+  ["new Uint8Array(1)", "0", true],
+  ["new BigInt64Array(1)", "0n", true],
+  ["[]", "0", false],
+])(
+  "owns receiver-relative primitive conversion in a getter's %s store",
+  (view, primitive, converts) => {
+    const value = returned(`
+    const box = {
+      payload: { value: 1, valueOf() { this.value = 2; return ${primitive}; } },
+      get trigger() { const a = ${view}; a[0] = this.payload; return 0; }
+    };
+    void box.trigger;
+    return box.payload.value;
+  `);
+    if (converts) expect(value?.status).toBe("unknown");
+    else expect(value).toEqual({ status: "literal", value: 1 });
+  },
+);

@@ -564,6 +564,7 @@ itWithCaptureCapability(
           system_code: null,
         });
       }
+      expect(escaped).toMatchObject({ type: "symlink", sha256: null });
       expect(JSON.stringify(capture.files_after)).not.toContain(root);
       expect(
         capture.files_after.some((file) => file.path.includes("passwd")),

@@ -19,9 +19,9 @@ const missingHopperAndGhidraEnvironment = (home: string) => ({
   JAVA_HOME: join(home, "missing-java"),
 });
 
-cliTest.skipIf(process.platform !== "win32")(
-  "rejects lowercase Windows provider settings in doctor and setup without writing",
-  async ({ cli }) => {
+cliTest.skipIf(process.platform !== "win32").for(["doctor", "setup"] as const)(
+  "rejects lowercase Windows provider settings in %s without writing",
+  async (command, { cli }) => {
     const home = await createTestTempDirectory("rea-registration-case-");
     const config = join(home, ".cursor/mcp.json");
     await mkdir(dirname(config), { recursive: true });
@@ -41,41 +41,37 @@ cliTest.skipIf(process.platform !== "win32")(
       XDG_CONFIG_HOME: join(home, ".config"),
       ...missingHopperAndGhidraEnvironment(home),
     };
-    const doctor = await cli.run({
-      arguments: ["doctor", "--client", "cursor", "--skill=false", "--json"],
-      cwd: home,
-      environment,
-    });
-    expect(doctor.exitCode).toBe(1);
-    expect(doctor.json).toMatchObject({
-      scope_checks: expect.arrayContaining([
-        expect.objectContaining({
-          name: "registration:cursor",
-          ok: false,
-          classification: "config_drift",
-          remediation: expect.stringContaining("REA_ANALYSIS_PROVIDER"),
-        }),
-      ]),
-    });
-    const setup = await cli.run({
+    const result = await cli.run({
       arguments: [
-        "setup",
+        command,
         "--client",
         "cursor",
         "--skill=false",
-        "--yes",
+        ...(command === "setup" ? ["--yes"] : []),
         "--json",
       ],
       cwd: home,
       environment,
     });
-    expect(setup.exitCode).toBe(1);
-    expect(setup.json).toMatchObject({
-      status: "needs_human",
-      plannedActions: [],
-      appliedActions: [],
-      remediation: expect.stringContaining("REA_ANALYSIS_PROVIDER"),
-    });
+    expect(result.exitCode).toBe(1);
+    if (command === "doctor")
+      expect(result.json).toMatchObject({
+        scope_checks: expect.arrayContaining([
+          expect.objectContaining({
+            name: "registration:cursor",
+            ok: false,
+            classification: "config_drift",
+            remediation: expect.stringContaining("REA_ANALYSIS_PROVIDER"),
+          }),
+        ]),
+      });
+    else
+      expect(result.json).toMatchObject({
+        status: "needs_human",
+        plannedActions: [],
+        appliedActions: [],
+        remediation: expect.stringContaining("REA_ANALYSIS_PROVIDER"),
+      });
     expect(await readFile(config, "utf8")).toBe(original);
     await expect(access(`${config}.rea.backup`)).rejects.toMatchObject({
       code: "ENOENT",

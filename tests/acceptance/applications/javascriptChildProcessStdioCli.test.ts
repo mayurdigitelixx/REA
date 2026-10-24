@@ -206,12 +206,13 @@ const exportAssignmentSource = `
   export = argv;
 `;
 
-cliTest.for(["CLI", "stdio MCP"] as const)(
-  "preserves effective stdio, overloads and explicit unknowns through %s",
-  async (surface, { cli }) => {
-    const root = await createTestTempDirectory("rea-child-stdio-");
-    await writeFixtureFiles(root, {
-      "entry.ts": `
+// CommonJS export assignment does not imply runtime strictness. The directive
+// keeps block functions from replacing the outer var binding.
+const strictExportAssignmentSource = `"use strict";
+${exportAssignmentSource.replaceAll("export-assignment-", "strict-export-assignment-")}`;
+
+const childStdioFixtureSources = {
+  "entry.ts": `
         import {spawn,exec,execFile,fork} from "node:child_process";
         import {done as imported} from "./external.mjs";
         throw new Error("static fixture must never execute");
@@ -223,15 +224,15 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
           ${cases.map(([source]) => `${source};`).join("\n")}
         }
       `,
-      "external.mjs": "export function done(){}",
-      "globals.js": `
+  "external.mjs": "export function done(){}",
+  "globals.js": `
         const {spawn,exec}=require("node:child_process");
         var argv=[];(()=>{}).constructor("argv={stdio:'inherit'}")();
         spawn("constructed-argv",argv,{stdio:"pipe"});
         let done=()=>{};(()=>{}).constructor("done={stdio:'inherit'}")();
         exec("constructed-callback",done);
       `,
-      "wrapper.cjs": `
+  "wrapper.cjs": `
         const {spawn,exec}=require("node:child_process");
         const argv=[]; const done=()=>{};
         spawn("cjs-argv",argv,{stdio:"inherit"});exec("cjs-callback",done);
@@ -240,19 +241,20 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
         function exports(){}; args[0]={stdio:"inherit"};
         exec("cjs-wrapper-callback",exports);
       `,
-      "wrapper.cts": `
+  "wrapper.cts": `
         const {spawn,exec}=require("node:child_process");
         const argv: string[]=[]; const done=()=>{};
         spawn("cts-argv",argv,{stdio:"inherit"});exec("cts-callback",done);
       `,
-      "annex-b.cjs": annexBSource,
-      "import-equals.ts": importEqualsSource,
-      "export-assignment.ts": exportAssignmentSource,
-      "parameters.cjs": `
+  "annex-b.cjs": annexBSource,
+  "import-equals.ts": importEqualsSource,
+  "export-assignment.ts": exportAssignmentSource,
+  "strict-export-assignment.ts": strictExportAssignmentSource,
+  "parameters.cjs": `
         const {exec}=require("node:child_process");
         function mapped(cb){cb=()=>{};arguments[0]={stdio:'inherit'};exec("mapped-callback",cb)}
       `,
-      "exposed.cjs": `
+  "exposed.cjs": `
         const {spawn,exec}=require("node:child_process");
         var mode=null; Function("mode='inherit'")();
         spawn("Function-global",[],{stdio:mode});
@@ -262,7 +264,13 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
         function exposed(options){let done=()=>{};eval("done=options");exec("eval-callback",done)}
         function shadowed(undefined){spawn("shadowed-undefined",[],{stdio:"inherit",...undefined})}
       `,
-    });
+};
+
+cliTest.for(["CLI", "stdio MCP"] as const)(
+  "preserves effective stdio, overloads and explicit unknowns through %s",
+  async (surface, { cli }) => {
+    const root = await createTestTempDirectory("rea-child-stdio-");
+    await writeFixtureFiles(root, childStdioFixtureSources);
     const graph = (await analyzeJavaScriptDirectory(surface, cli, root))
       .semantic_graph;
     const expected = new Map<string | null, readonly [string, number | null]>(
@@ -277,6 +285,8 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
     expected.set("import-equals-argv", ["inherit", null]);
     expected.set("import-equals-callback", ["default", null]);
     expected.set("export-assignment-argv", ["inherit", null]);
+    expected.set("strict-export-assignment-argv", ["inherit", null]);
+    expected.set("strict-export-assignment-annex", ["inherit", null]);
     for (const [command, count] of [
       ["Function-global", 0],
       ["frames-global", 0],
