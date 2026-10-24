@@ -72,6 +72,9 @@ import { registerPythonPycTool } from "./registerPythonPycTool.js";
 import { createBeamService } from "../composition/erlang.js";
 import type { BeamService } from "../application/erlang/BeamService.js";
 import { registerErlangTools } from "./registerErlangTools.js";
+import { createUnrealPakService } from "../composition/unreal.js";
+import type { UnrealPakService } from "../application/unreal/UnrealPakService.js";
+import { registerUnrealTools } from "./registerUnrealTools.js";
 import type { RecordedCrashService } from "../application/binaryDiagnostics/RecordedCrashService.js";
 import { registerAnalysisViewTool } from "./registerAnalysisViewTool.js";
 import { registerBinaryDiagnosticsTools } from "./registerBinaryDiagnosticsTools.js";
@@ -228,6 +231,7 @@ export interface CreateServerOptions {
   readonly rustBinary?: RustBinaryService;
   readonly pythonPyc?: PythonPycService;
   readonly erlangBeam?: BeamService;
+  readonly unrealPak?: UnrealPakService;
   readonly electronFuses?: ElectronFuseService;
   readonly recordedCrash?: RecordedCrashService;
   readonly firmwareAnalysis?: FirmwareAnalysisPort;
@@ -467,6 +471,7 @@ export const createServer = (
   const gpuCodeObjects = createGpuCodeObjectsService();
   const il2cppMetadata =
     options.il2cppMetadata ?? createIl2cppMetadataService();
+  const unrealPak = options.unrealPak ?? createUnrealPakService();
   const peResources = createPeResourcesService();
   const nativeExports = createNativeExportsService();
   const elfNotes = createElfNotesService();
@@ -578,6 +583,7 @@ export const createServer = (
       erlangBeam.close(),
       il2cppMetadata.close(),
       modelArtifact.close(),
+      unrealPak.close(),
       gpuCodeObjects.close(),
       peResources.close(),
       nativeExports.close(),
@@ -648,6 +654,7 @@ export const createServer = (
     rustBinary,
     erlangBeam,
     il2cppMetadata,
+    unrealPak,
     peResources,
     nativeExports,
     elfNotes,
@@ -886,6 +893,7 @@ const registerConfiguredAnalysisTools = (
     rustBinary,
     erlangBeam,
     il2cppMetadata,
+    unrealPak,
     peResources,
     nativeExports,
     elfNotes,
@@ -982,6 +990,14 @@ const registerConfiguredAnalysisTools = (
   registerIl2cppTools(
     server,
     il2cppMetadata,
+    toolLogger,
+    recordEvidence,
+    withAdmittedAnalysis,
+    evidenceById,
+  );
+  registerUnrealTools(
+    server,
+    unrealPak,
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,
@@ -1124,6 +1140,7 @@ interface ServerToolContext extends ReturnType<typeof createSessionRecorders> {
   readonly rustBinary: RustBinaryService;
   readonly erlangBeam: BeamService;
   readonly il2cppMetadata: Il2cppMetadataService;
+  readonly unrealPak: UnrealPakService;
   readonly peResources: PeResourcesService;
   readonly nativeExports: NativeExportsService;
   readonly elfNotes: ElfNotesService;
